@@ -2,8 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 
-// Se hai un file CSS (consigliato) mettilo qui.
-// Se NON lo hai, puoi commentare questa riga.
+// Se NON vuoi un file CSS, puoi commentare questa riga.
+// Se lo vuoi, crea "index.css" nella stessa cartella di questo file.
 import "./index.css";
 
 const rootElement = document.getElementById("root");
