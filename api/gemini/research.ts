@@ -30,7 +30,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+    // ✅ Modello compatibile (evita il 404 su v1beta)
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
     const prompt = `Analisi professionale dati gioco da tavolo: ${idOrUrl}.
 Restituisci SOLO un JSON con questi campi esatti (camelCase):
