@@ -1,0 +1,7 @@
+{
+  "name": "BGG Blog Generator Pro",
+  "description": "Recensioni tecniche di giochi da tavolo ottimizzate per Frogames.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
