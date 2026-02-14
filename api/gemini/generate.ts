@@ -27,19 +27,16 @@ STRUTTURA OBBLIGATORIA (H2):
 - <h2>Per chi è questo gioco</h2>
 - <h2>FAQ</h2>
 - <h2>Chiusura</h2>
+`;
 
-IMPORTANTISSIMO JSON:
-- Restituisci SOLO JSON valido.
-- Ogni valore stringa deve essere JSON-safe (escape di virgolette e a capo).
-- Dentro "content" usa \\n per andare a capo, NON inserire newline reali.
-`.trim();
+// --- Helpers robusti (JSON) ---
+// 1) prova a usare direttamente JSON puro (con responseMimeType)
+// 2) se Gemini ti risponde con testo "sporco", estrai la prima { ... } bilanciata
 
-// --- helpers ---
 function stripCodeFences(s: string) {
   return s.replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
-/** Estrae il primo oggetto JSON bilanciato */
 function extractFirstJsonObject(text: string): string | null {
   const cleaned = stripCodeFences(text);
   const start = cleaned.indexOf("{");
@@ -55,6 +52,14 @@ function extractFirstJsonObject(text: string): string | null {
   return null;
 }
 
+function safeParseJson(text: string) {
+  try {
+    return { ok: true as const, value: JSON.parse(text) };
+  } catch (e: any) {
+    return { ok: false as const, error: e?.message ?? "JSON.parse error" };
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -64,23 +69,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data, extras } = (req.body ?? {}) as any;
     if (!data || !extras) return res.status(400).json({ error: "Missing data/extras" });
+
     if (!data?.name) return res.status(400).json({ error: "Missing data.name" });
 
-    const publisher = extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
+    const publisher =
+      extras.publisherInfo || (data.publishers && data.publishers[0]) || "Non specificato";
+
     const designers =
       extras.designers?.length > 0
         ? extras.designers.map((d: any) => d.name).join(", ")
-        : (Array.isArray(data.designers) ? data.designers.join(", ") : "");
+        : data.designers
+          ? data.designers.join(", ")
+          : "Autore Ignoto";
+
     const artists =
       extras.artists?.length > 0
         ? extras.artists.map((a: any) => a.name).join(", ")
-        : (Array.isArray(data.artists) ? data.artists.join(", ") : "");
+        : data.artists
+          ? data.artists.join(", ")
+          : "Artista Ignoto";
 
-    const prompt = `
-RISPOSTA: restituisci SOLO JSON valido. Niente testo, niente markdown, niente commenti.
+    const shopLink = extras.shopLink || "https://www.frogames.it/";
+    const enrichmentNotes = extras.enrichmentNotes || "Descrivi la tensione e le scelte difficili.";
+
+    const prompt = `RISPOSTA: restituisci SOLO JSON valido. Niente testo, niente markdown, niente commenti.
 Se un dato è sconosciuto, usa stringa vuota "" o array [].
 
-SCRIVI UN'ANALISI NARRATIVA PROFONDA (900-1200 parole) sul gioco: "${data.name}".
+SCRIVI UN'ANALISI NARRATIVA PROFONDA DI 1200 PAROLE sul gioco: "${data.name}".
 
 ${BLOG_STRATEGY}
 
@@ -90,60 +105,67 @@ DATI TECNICI:
 - Artisti: ${artists}
 - Giocatori: ${data.minPlayers}-${data.maxPlayers}
 - Durata: ${data.playingTime} min
-- Meccaniche: ${Array.isArray(data.mechanics) ? data.mechanics.join(", ") : ""}
+- Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : "Strategia"}
 
-NOTE (scena di partita / dilemma):
-"${extras.enrichmentNotes || ""}"
+NOTE DALL'AUTORE (Scene di partita):
+"${enrichmentNotes}"
 
-LINK SHOP: ${extras.shopLink || "https://www.frogames.it/"}
+LINK SHOP: ${shopLink}
 
-Ritorna JSON con QUESTI CAMPI ESATTI:
-{
-  "title": string,
-  "slug": string,
-  "seoTitle": string,
-  "metaDescription": string,
-  "excerpt": string,
-  "content": string,        // HTML come stringa JSON-safe (usa \\n)
-  "telegramPost": string,
-  "jsonLd": object
-}
-`.trim();
+Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML denso), telegramPost, jsonLd.
+`;
 
     const genAI = new GoogleGenerativeAI(apiKey);
+
+    // ✅ FIX: forziamo risposta JSON "vera" + riduciamo variabilità
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-pro",
       generationConfig: {
-        // 🔥 questo è il punto: prova a costringere JSON pulito
-        responseMimeType: "application/json",
-        temperature: 0.4,
+        temperature: 0.2,
         topP: 0.9,
         maxOutputTokens: 6000,
+        responseMimeType: "application/json",
       },
     });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
 
-    const rawJson = extractFirstJsonObject(text) ?? stripCodeFences(text);
+    // 1) prova parse diretto
+    const direct = safeParseJson(text);
+    if (direct.ok) return res.status(200).json(direct.value);
 
-    try {
-      const out = JSON.parse(rawJson);
-      return res.status(200).json(out);
-    } catch (e: any) {
-      // Debug utile: ti faccio vedere l’output grezzo (tagliato)
+    // 2) fallback: estrai il primo oggetto JSON bilanciato
+    const raw = extractFirstJsonObject(text);
+    if (!raw) {
       return res.status(500).json({
-        error: `JSON.parse failed: ${e?.message ?? "unknown"}`,
+        error: `Gemini returned non-JSON output: ${direct.error}`,
+        hint: "Se persiste, passa a 'struttura->render HTML lato server' (soluzione definitiva).",
+        debug: { rawFirst2000: text.slice(0, 2000) },
+      });
+    }
+
+    const extracted = safeParseJson(raw);
+    if (!extracted.ok) {
+      return res.status(500).json({
+        error: `JSON.parse failed: ${extracted.error}`,
         hint:
-          "Gemini ha prodotto JSON non valido (tipico: virgolette non escapate dentro content). Con responseMimeType dovrebbe ridursi; se persiste, passa a 'struttura->render HTML lato server'.",
+          "Gemini ha prodotto JSON non valido (tipico: virgolette non escapate dentro content). " +
+          "Con responseMimeType di solito si risolve; se persiste, passa a 'struttura->render HTML lato server'.",
         debug: {
-          rawFirst4000: String(text || "").slice(0, 4000),
-          extractedFirst4000: String(rawJson || "").slice(0, 4000),
+          rawFirst4000: text.slice(0, 4000),
+          extractedFirst4000: raw.slice(0, 4000),
         },
       });
     }
+
+    return res.status(200).json(extracted.value);
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
-    return res.status(500).json({ error: e?.message ?? "Server error" });
+    return res.status(500).json({
+      error: e?.message ?? "Server error",
+      hint:
+        "Controlla GEMINI_API_KEY, body {data, extras}, e se vedi JSON.parse error è quasi sempre colpa di virgolette non escapate dentro content (HTML).",
+    });
   }
 }
