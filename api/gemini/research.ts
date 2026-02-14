@@ -31,10 +31,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    // ✅ Modello compatibile (evita il 404 su v1beta)
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+    // ✅ Modello compatibile (usa un modello presente nella tua lista)
+    // (nota: nell'SDK va senza "models/")
+    const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
-    const prompt = `Analisi professionale dati gioco da tavolo: ${idOrUrl}.
+    const prompt = `RISPOSTA: restituisci SOLO JSON valido. Niente testo, niente markdown, niente commenti.
+Se un dato è sconosciuto, usa stringa vuota "" o array [].
+
+Analisi professionale dati gioco da tavolo: ${idOrUrl}.
 Restituisci SOLO un JSON con questi campi esatti (camelCase):
 id, name, description, yearPublished, minPlayers, maxPlayers, playingTime, designers (array), artists (array), publishers (array), mechanics (array).
 Sii preciso su nomi di autori e editori.`;
