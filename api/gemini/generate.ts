@@ -15,15 +15,13 @@ function extractFirstJsonObject(text: string): string | null {
   const start = cleaned.indexOf("{");
   if (start === -1) return null;
 
-  // semplice scan bilanciamento parentesi
+  // scan bilanciamento parentesi
   let depth = 0;
   for (let i = start; i < cleaned.length; i++) {
     const ch = cleaned[i];
     if (ch === "{") depth++;
     if (ch === "}") depth--;
-    if (depth === 0) {
-      return cleaned.slice(start, i + 1);
-    }
+    if (depth === 0) return cleaned.slice(start, i + 1);
   }
   return null;
 }
@@ -69,7 +67,6 @@ function ensureArray(x: any) {
 }
 
 // -------------- minimal validation (no deps) --------------
-// Nota: questo non sostituisce Zod, ma evita output “rotto” e stoppa FAQ inventate.
 type ValidationIssue = { path: string; message: string };
 
 function validateDraftLoose(draft: any): ValidationIssue[] {
@@ -141,8 +138,6 @@ function validateDraftLoose(draft: any): ValidationIssue[] {
   const ctas = ensureArray(draft?.ctas);
   if (ctas.length < 2) issues.push({ path: "ctas", message: "Need 2 CTAs (hero+closing)" });
 
-  // FAQ evidence rule: se manca evidence_snippet => scarta in render
-  // (non errore: meglio output “safe”)
   return issues;
 }
 
@@ -303,14 +298,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const shopLink = extras.shopLink || "https://www.frogames.it/";
 
-    // RESEARCH: qui devi passare davvero testo grezzo
-    // fallback: enrichmentNotes
+    // RESEARCH: qui devi passare davvero testo grezzo (fondamentale)
     const rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
       "";
 
     const GAME_NAME = String(data.name || "").trim();
+
+    if (!GAME_NAME) return res.status(400).json({ error: "Missing data.name" });
+    if (!rawResearchText.trim()) {
+      return res.status(400).json({
+        error: "Missing extras.rawResearchText (research vuoto). Incolla un testo grezzo: senza research la qualità crolla.",
+      });
+    }
 
     const STRATEGY = `
 SEI UN DOCUMENTARISTA DI BOARDGAME CULTURE.
@@ -381,7 +382,16 @@ IMPORTANTE:
 `.trim();
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
+
+    // Config per ridurre output “random” e aumentare compliance JSON
+    const model = genAI.getGenerativeModel({
+      model: "gemini-2.5-pro",
+      generationConfig: {
+        temperature: 0.4,
+        topP: 0.9,
+        maxOutputTokens: 6000,
+      },
+    });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
@@ -390,7 +400,7 @@ IMPORTANTE:
     if (!rawJson) {
       return res.status(500).json({
         error: "No JSON object found in Gemini response",
-        debug: { raw: text.slice(0, 2000) },
+        debug: { raw: text.slice(0, 4000) },
       });
     }
 
@@ -399,7 +409,7 @@ IMPORTANTE:
       return res.status(500).json({
         error: "JSON parse failed",
         parseError: parsed.error,
-        debug: { raw: rawJson.slice(0, 2000) },
+        debug: { raw: rawJson.slice(0, 4000) },
       });
     }
 
@@ -415,7 +425,9 @@ IMPORTANTE:
 
     // Garantisce array
     out.pullQuotes = ensureArray(out.pullQuotes).slice(0, 3);
-   if (out.pullQuotes.length < 2) out.pullQuotes = [clampLen(out.title, 120), clampLen(out.seoTitle, 120)].slice(0, 2);
+    if (out.pullQuotes.length < 2) {
+      out.pullQuotes = [clampLen(out.title, 120), clampLen(out.seoTitle, 120)].slice(0, 2);
+    }
 
     out.facts = ensureArray(out.facts).slice(0, 12);
     out.sections = ensureArray(out.sections);
@@ -424,13 +436,25 @@ IMPORTANTE:
 
     // Fallback CTA se mancano
     const hasHeroCta = out.ctas.some((c: any) => c?.placement === "hero" && isNonEmptyString(c?.url));
-    const hasClosingCta = out.ctas.some((c: any) => c?.placement === "closing" && isNonEmptyString(c?.url));
+    const hasClosingCta = out.ctas.some(
+      (c: any) => c?.placement === "closing" && isNonEmptyString(c?.url)
+    );
     if (!hasHeroCta) out.ctas.push({ label: "Scoprilo su FroGames", url: shopLink, placement: "hero" });
-    if (!hasClosingCta) out.ctas.push({ label: "Vai allo shop FroGames", url: shopLink, placement: "closing" });
-    // keep 2
+    if (!hasClosingCta)
+      out.ctas.push({ label: "Vai allo shop FroGames", url: shopLink, placement: "closing" });
+
+    // keep 2 (hero + closing)
     out.ctas = [
-      out.ctas.find((c: any) => c?.placement === "hero") || { label: "Scoprilo su FroGames", url: shopLink, placement: "hero" },
-      out.ctas.find((c: any) => c?.placement === "closing") || { label: "Vai allo shop FroGames", url: shopLink, placement: "closing" },
+      out.ctas.find((c: any) => c?.placement === "hero") || {
+        label: "Scoprilo su FroGames",
+        url: shopLink,
+        placement: "hero",
+      },
+      out.ctas.find((c: any) => c?.placement === "closing") || {
+        label: "Vai allo shop FroGames",
+        url: shopLink,
+        placement: "closing",
+      },
     ];
 
     // Loose validation: se mancano pezzi chiave, torna error con issues + raw debug
@@ -454,6 +478,9 @@ IMPORTANTE:
     });
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
-    return res.status(500).json({ error: e?.message ?? "Server error" });
+    return res.status(500).json({
+      error: e?.message ?? "Server error",
+      hint: "Controlla GEMINI_API_KEY, body {data, extras}, e che extras.rawResearchText non sia vuoto.",
+    });
   }
 }
