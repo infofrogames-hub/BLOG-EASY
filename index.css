@@ -13,6 +13,7 @@
 
 body {
   margin: 0;
+  overflow-x: hidden; /* evita layout che “esplodono” */
 }
 
 *,
@@ -21,7 +22,7 @@ body {
   box-sizing: border-box;
 }
 
-/* Se la tua UI usa h1/h2/h3 ovunque, questi valori riportano tutto “umano” */
+/* Tipografia “umana” */
 h1, h2, h3 {
   font-family: "Playfair Display", serif;
   margin: 0 0 0.6rem;
@@ -38,4 +39,11 @@ p {
 
 button, input, textarea, select {
   font: inherit;
+}
+
+/* FIX: gli SVG non devono mai prendersi metà pagina */
+svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
 }
