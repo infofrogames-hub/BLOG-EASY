@@ -11,7 +11,6 @@ function stripCodeFences(s: string) {
 
 function extractFirstJsonObject(text: string): string | null {
   const cleaned = stripCodeFences(text);
-
   const start = cleaned.indexOf("{");
   if (start === -1) return null;
 
@@ -151,7 +150,9 @@ function renderHtml(draft: any, shopLink: string) {
 
   const faqItemsRaw = ensureArray(draft?.faq);
   const faqItems = faqItemsRaw
-    .filter((f: any) => isNonEmptyString(f?.q) && isNonEmptyString(f?.a) && isNonEmptyString(f?.evidence_snippet))
+    .filter(
+      (f: any) => isNonEmptyString(f?.q) && isNonEmptyString(f?.a) && isNonEmptyString(f?.evidence_snippet)
+    )
     .slice(0, 8);
 
   const nav = sections
@@ -298,18 +299,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const shopLink = extras.shopLink || "https://www.frogames.it/";
 
-    // RESEARCH: qui devi passare davvero testo grezzo (fondamentale)
+    // ✅ RESEARCH: accetta più nomi (così non ti impicci col frontend)
     const rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
+      (extras.researchText && String(extras.researchText)) ||
+      (extras.research && String(extras.research)) ||
+      (extras.raw && String(extras.raw)) ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
       "";
 
     const GAME_NAME = String(data.name || "").trim();
 
     if (!GAME_NAME) return res.status(400).json({ error: "Missing data.name" });
+
+    // ✅ Non bloccare con errore “rawResearchText”: blocca solo se è davvero vuoto
     if (!rawResearchText.trim()) {
       return res.status(400).json({
-        error: "Missing extras.rawResearchText (research vuoto). Incolla un testo grezzo: senza research la qualità crolla.",
+        error:
+          "Research vuoto. Devi inviare un testo grezzo dentro extras.rawResearchText (oppure extras.researchText).",
+        expectedBodyExample: {
+          data: { name: "SETI" },
+          extras: { rawResearchText: "Incolla qui il tuo testo grezzo..." },
+        },
       });
     }
 
@@ -436,12 +447,9 @@ IMPORTANTE:
 
     // Fallback CTA se mancano
     const hasHeroCta = out.ctas.some((c: any) => c?.placement === "hero" && isNonEmptyString(c?.url));
-    const hasClosingCta = out.ctas.some(
-      (c: any) => c?.placement === "closing" && isNonEmptyString(c?.url)
-    );
+    const hasClosingCta = out.ctas.some((c: any) => c?.placement === "closing" && isNonEmptyString(c?.url));
     if (!hasHeroCta) out.ctas.push({ label: "Scoprilo su FroGames", url: shopLink, placement: "hero" });
-    if (!hasClosingCta)
-      out.ctas.push({ label: "Vai allo shop FroGames", url: shopLink, placement: "closing" });
+    if (!hasClosingCta) out.ctas.push({ label: "Vai allo shop FroGames", url: shopLink, placement: "closing" });
 
     // keep 2 (hero + closing)
     out.ctas = [
@@ -480,7 +488,7 @@ IMPORTANTE:
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint: "Controlla GEMINI_API_KEY, body {data, extras}, e che extras.rawResearchText non sia vuoto.",
+      hint: "Controlla GEMINI_API_KEY, body {data, extras}, e che extras.rawResearchText (o researchText) non sia vuoto.",
     });
   }
 }
