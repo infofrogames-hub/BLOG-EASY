@@ -80,7 +80,7 @@ Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML
 `;
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
+    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
