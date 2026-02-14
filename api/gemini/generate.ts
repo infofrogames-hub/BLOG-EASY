@@ -1,7 +1,7 @@
 // api/gemini/generate.ts (SERVER - Vercel)
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenerativeAI } from "@google/generative-ai";
 
 const BLOG_STRATEGY = `
 SEI UN ANALISTA TECNICO DI GIOCHI DA TAVOLO. La tua missione è scrivere un'analisi narrativa profonda. 
@@ -31,7 +31,7 @@ STRUTTURA OBBLIGATORIA (H2):
 
 const cleanJsonResponse = (text: string | undefined): string => {
   if (!text) return "{}";
-  let cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
+  const cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
   if (start !== -1 && end !== -1) return cleaned.substring(start, end + 1);
@@ -50,9 +50,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const publisher = extras.publisherInfo || (data.publishers && data.publishers[0]) || "Non specificato";
     const designers =
-      extras.designers?.length > 0 ? extras.designers.map((d: any) => d.name).join(", ") : (data.designers ? data.designers.join(", ") : "Autore Ignoto");
+      extras.designers?.length > 0
+        ? extras.designers.map((d: any) => d.name).join(", ")
+        : (data.designers ? data.designers.join(", ") : "Autore Ignoto");
     const artists =
-      extras.artists?.length > 0 ? extras.artists.map((a: any) => a.name).join(", ") : (data.artists ? data.artists.join(", ") : "Artista Ignoto");
+      extras.artists?.length > 0
+        ? extras.artists.map((a: any) => a.name).join(", ")
+        : (data.artists ? data.artists.join(", ") : "Artista Ignoto");
 
     const prompt = `
 SCRIVI UN'ANALISI NARRATIVA PROFONDA DI 1200 PAROLE sul gioco: "${data.name}".
@@ -75,15 +79,13 @@ LINK SHOP: ${extras.shopLink || "https://www.frogames.it/"}
 Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML denso), telegramPost, jsonLd.
 `;
 
-    const ai = new GoogleGenAI({ apiKey });
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
 
-    const response = await ai.models.generateContent({
-      model: "gemini-1.5-pro",
-      contents: prompt,
-      config: { tools: [{ googleSearch: {} }], responseMimeType: "application/json" },
-    });
+    const result = await model.generateContent(prompt);
+    const text = result.response.text();
 
-    const out = JSON.parse(cleanJsonResponse(response.text));
+    const out = JSON.parse(cleanJsonResponse(text));
     return res.status(200).json(out);
   } catch (e: any) {
     return res.status(500).json({ error: e?.message ?? "Server error" });
