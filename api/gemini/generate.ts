@@ -58,7 +58,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? extras.artists.map((a: any) => a.name).join(", ")
         : (data.artists ? data.artists.join(", ") : "Artista Ignoto");
 
-    const prompt = `
+    const prompt = `RISPOSTA: restituisci SOLO JSON valido. Niente testo, niente markdown, niente commenti.
+Se un dato è sconosciuto, usa stringa vuota "" o array [].
+
 SCRIVI UN'ANALISI NARRATIVA PROFONDA DI 1200 PAROLE sul gioco: "${data.name}".
 
 ${BLOG_STRATEGY}
@@ -80,7 +82,10 @@ Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML
 `;
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+
+    // ✅ Modello presente nella tua lista (qualità alta per testi lunghi)
+    // (nota: nell'SDK va senza "models/")
+    const model = genAI.getGenerativeModel({ model: "gemini-2.5-pro" });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
@@ -88,6 +93,7 @@ Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML
     const out = JSON.parse(cleanJsonResponse(text));
     return res.status(200).json(out);
   } catch (e: any) {
+    console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({ error: e?.message ?? "Server error" });
   }
 }
