@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Blog Easy – FroGames</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b1020;color:#eef5ff}
+    .wrap{max-width:980px;margin:0 auto;padding:18px}
+    .card{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:14px}
+    label{display:block;margin:10px 0 6px;font-weight:700}
+    input,textarea{width:100%;box-sizing:border-box;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(0,0,0,.25);color:#eef5ff;padding:10px}
+    textarea{min-height:220px;resize:vertical}
+    button{cursor:pointer;border-radius:12px;border:1px solid rgba(255,255,255,.18);background:#2b7cff;color:white;font-weight:800;padding:10px 14px}
+    .row{display:grid;gap:12px;grid-template-columns:1fr 1fr}
+    @media (max-width:820px){.row{grid-template-columns:1fr}}
+    pre{white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.25);padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,.12)}
+    .ok{color:#7CFFB2}
+    .err{color:#ff7c7c}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Blog Easy – FroGames</h1>
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Nome gioco</label>
+          <input id="name" placeholder="Es. SETI: Search for Extraterrestrial Intelligence" />
+        </div>
+        <div>
+          <label>Shop link (CTA)</label>
+          <input id="shopLink" value="https://www.frogames.it/" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Min giocatori</label>
+          <input id="minPlayers" type="number" value="1" />
+        </div>
+        <div>
+          <label>Max giocatori</label>
+          <input id="maxPlayers" type="number" value="4" />
+        </div>
+      </div>
+
+      <div class="row">
+        <div>
+          <label>Durata (min)</label>
+          <input id="playingTime" type="number" value="90" />
+        </div>
+        <div>
+          <label>Meccaniche (separate da virgola)</label>
+          <input id="mechanics" placeholder="Hand Management, Tableau Building..." />
+        </div>
+      </div>
+
+      <label>RAW RESEARCH (fondamentale)</label>
+      <textarea id="rawResearchText" placeholder="Incolla qui appunti, riassunti, estratti regolamento, note di partita..."></textarea>
+
+      <div style="margin-top:12px;display:flex;gap:10px;align-items:center">
+        <button id="go">Genera</button>
+        <span id="status"></span>
+      </div>
+
+      <h2 style="margin-top:16px">Output (JSON)</h2>
+      <pre id="outJson"></pre>
+
+      <h2>Output (HTML pronto)</h2>
+      <pre id="outHtml"></pre>
+    </div>
+  </div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+
+  $("go").addEventListener("click", async () => {
+    $("status").textContent = "Genero...";
+    $("status").className = "";
+    $("outJson").textContent = "";
+    $("outHtml").textContent = "";
+
+    const payload = {
+      data: {
+        name: $("name").value.trim(),
+        minPlayers: Number($("minPlayers").value || 0),
+        maxPlayers: Number($("maxPlayers").value || 0),
+        playingTime: Number($("playingTime").value || 0),
+        mechanics: $("mechanics").value
+          .split(",")
+          .map(s => s.trim())
+          .filter(Boolean),
+      },
+      extras: {
+        shopLink: $("shopLink").value.trim(),
+        rawResearchText: $("rawResearchText").value,
+      }
+    };
+
+    try {
+      const r = await fetch("/api/gemini/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const j = await r.json();
+      if (!r.ok) {
+        $("status").textContent = "Errore: " + (j.error || r.status);
+        $("status").className = "err";
+        $("outJson").textContent = JSON.stringify(j, null, 2);
+        return;
+      }
+
+      $("status").textContent = "OK ✅";
+      $("status").className = "ok";
+      $("outJson").textContent = JSON.stringify(j, null, 2);
+      $("outHtml").textContent = j.contentHtml || "(nessun contentHtml)";
+    } catch (e) {
+      $("status").textContent = "Errore: " + e.message;
+      $("status").className = "err";
+    }
+  });
+</script>
+</body>
+</html>
