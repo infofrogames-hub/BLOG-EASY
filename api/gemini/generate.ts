@@ -37,11 +37,11 @@ function safeJsonParse(raw: string): { ok: true; value: any } | { ok: false; err
 }
 
 function slugify(input: string) {
-  return input
+  return String(input || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "") // accenti
-    .replace(/[^\w\s-]/g, "")       // rimuove simboli
+    .replace(/[^\w\s-]/g, "") // rimuove simboli
     .trim()
     .replace(/\s+/g, "-")
     .slice(0, 80);
@@ -49,24 +49,116 @@ function slugify(input: string) {
 
 function clampLen(s: string, max: number) {
   if (!s) return "";
-  return s.length <= max ? s : s.slice(0, max - 1).trimEnd() + "…";
+  const str = String(s);
+  return str.length <= max ? str : str.slice(0, max - 1).trimEnd() + "…";
 }
 
 function htmlEscape(s: string) {
-  return s
+  return String(s || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
 
+function isNonEmptyString(x: any) {
+  return typeof x === "string" && x.trim().length > 0;
+}
+
+function ensureArray(x: any) {
+  return Array.isArray(x) ? x : [];
+}
+
+// -------------- minimal validation (no deps) --------------
+// Nota: questo non sostituisce Zod, ma evita output “rotto” e stoppa FAQ inventate.
+type ValidationIssue = { path: string; message: string };
+
+function validateDraftLoose(draft: any): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  const requiredTop = ["title", "slug", "seoTitle", "metaDescription", "excerpt"];
+  for (const k of requiredTop) {
+    if (!isNonEmptyString(draft?.[k])) issues.push({ path: k, message: "Missing/empty" });
+  }
+
+  // seo rules
+  if (isNonEmptyString(draft?.seoTitle)) {
+    if (draft.seoTitle.length > 70) issues.push({ path: "seoTitle", message: "Too long (>70)" });
+    if (draft.seoTitle.includes(":")) issues.push({ path: "seoTitle", message: 'Contains ":" (use –)' });
+  }
+  if (isNonEmptyString(draft?.metaDescription)) {
+    if (draft.metaDescription.length > 160)
+      issues.push({ path: "metaDescription", message: "Too long (>160)" });
+    if (draft.metaDescription.includes(":"))
+      issues.push({ path: "metaDescription", message: 'Contains ":" (use –)' });
+  }
+
+  // pullQuotes
+  if (!Array.isArray(draft?.pullQuotes) || draft.pullQuotes.length < 2) {
+    issues.push({ path: "pullQuotes", message: "Need 2–3 pullQuotes" });
+  }
+
+  // facts evidence
+  const facts = ensureArray(draft?.facts);
+  if (facts.length < 6) issues.push({ path: "facts", message: "Need 6–12 facts" });
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i];
+    if (!isNonEmptyString(f?.fact)) issues.push({ path: `facts[${i}].fact`, message: "Missing" });
+    if (!isNonEmptyString(f?.evidence_snippet))
+      issues.push({ path: `facts[${i}].evidence_snippet`, message: "Missing" });
+  }
+
+  // sections
+  const sections = ensureArray(draft?.sections);
+  const expectedIds = [
+    "hero",
+    "origin",
+    "system",
+    "turn",
+    "different",
+    "table",
+    "learning",
+    "target",
+    "faq",
+    "closing",
+  ];
+  if (sections.length !== 10) issues.push({ path: "sections", message: "Must be 10 sections" });
+
+  const ids = new Set(sections.map((s: any) => s?.id));
+  for (const id of expectedIds) {
+    if (!ids.has(id)) issues.push({ path: "sections", message: `Missing section id: ${id}` });
+  }
+
+  for (let i = 0; i < sections.length; i++) {
+    const s = sections[i];
+    if (!isNonEmptyString(s?.id)) issues.push({ path: `sections[${i}].id`, message: "Missing" });
+    if (!isNonEmptyString(s?.h2)) issues.push({ path: `sections[${i}].h2`, message: "Missing" });
+    if (!isNonEmptyString(s?.hook)) issues.push({ path: `sections[${i}].hook`, message: "Missing" });
+    const paras = ensureArray(s?.paragraphs);
+    if (paras.length < 1) issues.push({ path: `sections[${i}].paragraphs`, message: "Empty" });
+  }
+
+  // ctas
+  const ctas = ensureArray(draft?.ctas);
+  if (ctas.length < 2) issues.push({ path: "ctas", message: "Need 2 CTAs (hero+closing)" });
+
+  // FAQ evidence rule: se manca evidence_snippet => scarta in render
+  // (non errore: meglio output “safe”)
+  return issues;
+}
+
 // -------------- HTML renderer (struttura fissa) --------------
-
+// - tutto nel DOM
+// - <details> SEO-safe
+// - FAQ renderizzata SOLO dentro la sezione "faq" e SOLO se evidence_snippet presente (anti-invenzioni)
 function renderHtml(draft: any, shopLink: string) {
-  const sections = Array.isArray(draft.sections) ? draft.sections : [];
-  const faq = Array.isArray(draft.faq) ? draft.faq : [];
-  const pullQuotes = Array.isArray(draft.pullQuotes) ? draft.pullQuotes : [];
+  const sections = ensureArray(draft?.sections);
+  const pullQuotes = ensureArray(draft?.pullQuotes);
 
-  // Accordion SEO-safe via <details> (tutto nel DOM, zero JS, stabile)
+  const faqItemsRaw = ensureArray(draft?.faq);
+  const faqItems = faqItemsRaw
+    .filter((f: any) => isNonEmptyString(f?.q) && isNonEmptyString(f?.a) && isNonEmptyString(f?.evidence_snippet))
+    .slice(0, 8);
+
   const nav = sections
     .map((s: any) => `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`)
     .join("");
@@ -81,18 +173,41 @@ function renderHtml(draft: any, shopLink: string) {
         </div>`
       : "";
 
+  const ctaHeroUrl =
+    (draft?.ctas?.find?.((c: any) => c?.placement === "hero")?.url as string) || shopLink;
+
   const sectionsHtml = sections
     .map((s: any, idx: number) => {
-      const paras = (s.paragraphs ?? []).map((p: string) => `<p>${htmlEscape(p)}</p>`).join("");
-      const h3Blocks = (s.h3Blocks ?? [])
+      const paras = ensureArray(s?.paragraphs)
+        .map((p: string) => `<p>${htmlEscape(p)}</p>`)
+        .join("");
+
+      const h3Blocks = ensureArray(s?.h3Blocks)
         .map((b: any) => {
-          const bparas = (b.paragraphs ?? []).map((p: string) => `<p>${htmlEscape(p)}</p>`).join("");
-          return `<h3>${htmlEscape(b.h3)}</h3>${bparas}`;
+          const bparas = ensureArray(b?.paragraphs)
+            .map((p: string) => `<p>${htmlEscape(p)}</p>`)
+            .join("");
+          return `<h3>${htmlEscape(b?.h3 || "")}</h3>${bparas}`;
         })
         .join("");
 
-      // prima sezione aperta di default
       const openAttr = idx === 0 ? " open" : "";
+
+      // FAQ: solo dentro questa sezione, e solo se evidence presente
+      const faqHtml =
+        s?.id === "faq" && faqItems.length > 0
+          ? `<div class="fg-faq">
+              ${faqItems
+                .map(
+                  (f: any) => `
+                <details class="fg-faq__item">
+                  <summary class="fg-faq__q">${htmlEscape(f.q)}</summary>
+                  <div class="fg-faq__a"><p>${htmlEscape(f.a)}</p></div>
+                </details>`
+                )
+                .join("")}
+            </div>`
+          : "";
 
       return `
       <section id="${htmlEscape(s.id)}" class="fg-sec">
@@ -104,33 +219,13 @@ function renderHtml(draft: any, shopLink: string) {
           <div class="fg-acc__body">
             ${paras}
             ${h3Blocks}
+            ${faqHtml}
           </div>
         </details>
       </section>
       `;
     })
     .join("");
-
-  const faqHtml =
-    faq.length > 0
-      ? `<section id="faq" class="fg-sec">
-          <h2>FAQ</h2>
-          <div class="fg-faq">
-            ${faq
-              .slice(0, 8)
-              .map((f: any) => {
-                return `
-                <details class="fg-faq__item">
-                  <summary class="fg-faq__q">${htmlEscape(f.q)}</summary>
-                  <div class="fg-faq__a"><p>${htmlEscape(f.a)}</p></div>
-                </details>`;
-              })
-              .join("")}
-          </div>
-        </section>`
-      : "";
-
-  const ctaUrl = (draft.ctas?.find?.((c: any) => c.placement === "hero")?.url || shopLink) as string;
 
   return `
 <article class="fg-blog">
@@ -140,7 +235,7 @@ function renderHtml(draft: any, shopLink: string) {
     .fg-kicker{opacity:.8;font-size:.95rem}
     .fg-title{margin:.2rem 0 .4rem;font-size:1.7rem;line-height:1.2}
     .fg-excerpt{margin:0}
-    .fg-btn{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.18);text-decoration:none;font-weight:700}
+    .fg-btn{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.18);text-decoration:none;font-weight:800}
     .fg-toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px}
     .fg-toc__a{font-size:.92rem;text-decoration:none;border:1px solid rgba(0,0,0,.14);padding:6px 10px;border-radius:999px}
     .fg-quotes{display:grid;gap:10px;margin:14px 0}
@@ -149,19 +244,20 @@ function renderHtml(draft: any, shopLink: string) {
     .fg-acc{border:1px solid rgba(0,0,0,.12);border-radius:14px;overflow:hidden}
     .fg-acc__sum{cursor:pointer;padding:12px 12px;list-style:none}
     .fg-acc__sum::-webkit-details-marker{display:none}
-    .fg-acc__h2{display:block;font-weight:800}
+    .fg-acc__h2{display:block;font-weight:900}
     .fg-acc__hook{display:block;opacity:.85;margin-top:4px}
     .fg-acc__body{padding:0 12px 12px}
+    .fg-faq{margin-top:10px}
     .fg-faq__item{border:1px solid rgba(0,0,0,.12);border-radius:14px;padding:10px 12px;margin:10px 0}
-    .fg-faq__q{cursor:pointer;font-weight:800}
+    .fg-faq__q{cursor:pointer;font-weight:900}
     .fg-faq__a p{margin:.6rem 0 0}
   </style>
 
   <header class="fg-hero">
     <div class="fg-kicker">Blog FroGames • Mini-documentario da tavolo</div>
-    <h1 class="fg-title">${htmlEscape(draft.title || "")}</h1>
-    <p class="fg-excerpt">${htmlEscape(draft.excerpt || "")}</p>
-    <a class="fg-btn" href="${htmlEscape(ctaUrl)}" rel="nofollow">Scoprilo su FroGames</a>
+    <h1 class="fg-title">${htmlEscape(draft?.title || "")}</h1>
+    <p class="fg-excerpt">${htmlEscape(draft?.excerpt || "")}</p>
+    <a class="fg-btn" href="${htmlEscape(ctaHeroUrl)}" rel="nofollow">Scoprilo su FroGames</a>
   </header>
 
   ${quotesHtml}
@@ -171,8 +267,6 @@ function renderHtml(draft: any, shopLink: string) {
   </nav>
 
   ${sectionsHtml}
-
-  ${faqHtml}
 
   <footer class="fg-sec">
     <a class="fg-btn" href="${htmlEscape(shopLink)}" rel="nofollow">Vai allo shop FroGames</a>
@@ -197,15 +291,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const designers =
       extras.designers?.length > 0
         ? extras.designers.map((d: any) => d.name).join(", ")
-        : (data.designers ? data.designers.join(", ") : "");
+        : data.designers
+          ? data.designers.join(", ")
+          : "";
     const artists =
       extras.artists?.length > 0
         ? extras.artists.map((a: any) => a.name).join(", ")
-        : (data.artists ? data.artists.join(", ") : "");
+        : data.artists
+          ? data.artists.join(", ")
+          : "";
 
     const shopLink = extras.shopLink || "https://www.frogames.it/";
 
-    // Se hai “rawResearchText” vero, passalo qui. Al momento usi enrichmentNotes:
+    // RESEARCH: qui devi passare davvero testo grezzo
+    // fallback: enrichmentNotes
     const rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
@@ -236,14 +335,15 @@ SEO:
 - metaDescription <= 160
 - includi naturalmente “gioco da tavolo” + 2 varianti coerenti (senza spam)
 
-STRUTTURA SEZIONI (ID FISSI):
+STRUTTURA SEZIONI (ID FISSI, 10):
 hero, origin, system, turn, different, table, learning, target, faq, closing
 
-FAQ RULE:
-- Scrivi una FAQ SOLO se puoi allegare evidence_snippet copiato dal RESEARCH.
-- Se non hai evidence, non inventare: lascia faq[] vuoto.
+EVIDENCE RULE (ANTI-INVENZIONI):
+- facts[] deve SEMPRE avere evidence_snippet copiato dal RESEARCH (10–25 parole).
+- faq[]: scrivi una FAQ SOLO se puoi allegare evidence_snippet dal RESEARCH. Se non hai evidence, lascia faq[] vuoto.
 
-OUTPUT JSON FINALE: BlogDraft (campi: title, slug, seoTitle, metaDescription, excerpt, pullQuotes, facts, sections, faq, ctas)
+OUTPUT JSON FINALE (campi obbligatori):
+title, slug, seoTitle, metaDescription, excerpt, pullQuotes[], facts[], sections[], faq[], ctas[]
 `.trim();
 
     const prompt = `
@@ -253,7 +353,7 @@ Non inventare niente che non sia supportato dal RESEARCH.
 
 GIOCO: "${GAME_NAME}"
 
-DATI TECNICI (se utili, ma NON inventare oltre questi):
+DATI TECNICI (usali SOLO come contesto, NON inventare oltre questi):
 - Editore: ${publisher}
 - Autori: ${designers}
 - Artisti: ${artists}
@@ -268,14 +368,16 @@ LINK SHOP (CTA): ${shopLink}
 
 ${STRATEGY}
 
-GENERAZIONE:
-1) Crea facts[] (6-12) con evidence_snippet (10–25 parole copiate dal RESEARCH) e confidence.
-2) Crea sections[] (10 sezioni con gli id fissi) con hook + paragraphs brevi.
-3) Crea faq[] SOLO se hai evidence_snippet nel RESEARCH.
-4) Crea pullQuotes[] (2-3) max 120 caratteri.
+GENERAZIONE (obbligatoria):
+1) facts[]: 6-12 elementi. Ogni fact ha evidence_snippet (10–25 parole copiate dal RESEARCH) + confidence.
+2) sections[]: 10 sezioni con gli ID fissi. Ogni sezione: h2, hook (1 frase), paragraphs[] brevi. Se serve: h3Blocks[].
+3) faq[]: 0-8. SOLO se evidence_snippet esiste nel RESEARCH.
+4) pullQuotes[]: 2-3 frasi max 120 caratteri.
 5) ctas[]: 2 CTA (hero + closing) verso LINK SHOP.
 
-NOTA: slug = slugify(title o GAME_NAME). seoTitle/metaDescription rispettano i limiti.
+IMPORTANTE:
+- slug = slugify(title o GAME_NAME)
+- seoTitle/metaDescription rispettano i limiti e NON contengono ":" (usa “–”)
 `.trim();
 
     const genAI = new GoogleGenerativeAI(apiKey);
@@ -301,21 +403,53 @@ NOTA: slug = slugify(title o GAME_NAME). seoTitle/metaDescription rispettano i l
       });
     }
 
-    const out = parsed.value;
+    const out = parsed.value ?? {};
 
     // hard clamps (seo safety)
     out.title = out.title || GAME_NAME;
     out.slug = out.slug || slugify(out.title || GAME_NAME);
+
+    // Normalizza “:” -> “–” e tronca
     out.seoTitle = clampLen(String(out.seoTitle || out.title || GAME_NAME).replace(/:/g, "–"), 70);
     out.metaDescription = clampLen(String(out.metaDescription || out.excerpt || ""), 160);
+
+    // Garantisce array
+    out.pullQuotes = ensureArray(out.pullQuotes).slice(0, 3);
+   if (out.pullQuotes.length < 2) out.pullQuotes = [clampLen(out.title, 120), clampLen(out.seoTitle, 120)].slice(0, 2);
+
+    out.facts = ensureArray(out.facts).slice(0, 12);
+    out.sections = ensureArray(out.sections);
+    out.faq = ensureArray(out.faq);
+    out.ctas = ensureArray(out.ctas);
+
+    // Fallback CTA se mancano
+    const hasHeroCta = out.ctas.some((c: any) => c?.placement === "hero" && isNonEmptyString(c?.url));
+    const hasClosingCta = out.ctas.some((c: any) => c?.placement === "closing" && isNonEmptyString(c?.url));
+    if (!hasHeroCta) out.ctas.push({ label: "Scoprilo su FroGames", url: shopLink, placement: "hero" });
+    if (!hasClosingCta) out.ctas.push({ label: "Vai allo shop FroGames", url: shopLink, placement: "closing" });
+    // keep 2
+    out.ctas = [
+      out.ctas.find((c: any) => c?.placement === "hero") || { label: "Scoprilo su FroGames", url: shopLink, placement: "hero" },
+      out.ctas.find((c: any) => c?.placement === "closing") || { label: "Vai allo shop FroGames", url: shopLink, placement: "closing" },
+    ];
+
+    // Loose validation: se mancano pezzi chiave, torna error con issues + raw debug
+    const issues = validateDraftLoose(out);
+    if (issues.length > 0) {
+      return res.status(500).json({
+        error: "Draft validation failed (loose)",
+        issues,
+        debug: { rawModelOutput: text.slice(0, 4000) },
+      });
+    }
 
     // Render HTML fisso lato server
     const html = renderHtml(out, shopLink);
 
-    // Risposta: JSON + html pronto
+    // Risposta: JSON + html pronto (HTML generato dal renderer, NON dal modello)
     return res.status(200).json({
       ...out,
-      contentHtml: html, // <— questo sostituisce “content HTML denso” scritto dal modello
+      contentHtml: html,
       debug: { model: "gemini-2.5-pro" },
     });
   } catch (e: any) {
