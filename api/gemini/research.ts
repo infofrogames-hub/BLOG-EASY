@@ -55,6 +55,9 @@ Sii preciso su nomi di autori e editori.`;
 
     return res.status(200).json(out);
   } catch (e: any) {
-    return res.status(500).json({ error: e?.message ?? "Server error" });
+    console.error("GEMINI /research ERROR:", e?.message, e?.stack);
+    return res.status(500).json({
+      error: e?.message ?? "Server error"
+    });
   }
 }
