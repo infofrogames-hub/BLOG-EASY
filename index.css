@@ -1,11 +1,11 @@
-/* index.css — base reset + typography */
+/* Tailwind layers */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* Extra globali (i tuoi) */
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 1.5;
-  color: #0f172a;
-  background: #f8fafc;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -13,35 +13,12 @@
 
 body {
   margin: 0;
-  overflow-x: hidden; /* evita layout che “esplodono” */
+  overflow-x: hidden;
+  background: #f8fafc;
+  color: #0f172a;
 }
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-/* Tipografia “umana” */
-h1, h2, h3 {
-  font-family: "Playfair Display", serif;
-  margin: 0 0 0.6rem;
-  line-height: 1.15;
-}
-
-h1 { font-size: 2rem; }
-h2 { font-size: 1.5rem; }
-h3 { font-size: 1.25rem; }
-
-p {
-  margin: 0 0 0.8rem;
-}
-
-button, input, textarea, select {
-  font: inherit;
-}
-
-/* FIX: gli SVG non devono mai prendersi metà pagina */
+/* Fix difensivo SVG */
 svg {
   max-width: 100%;
   height: auto;
