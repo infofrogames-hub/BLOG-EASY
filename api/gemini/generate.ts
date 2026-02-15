@@ -185,7 +185,6 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
     generationConfig: {
       temperature: 0.2,
       topP: 0.9,
-      // Alziamo per evitare risposte tronche
       maxOutputTokens: 8000,
       responseMimeType: "application/json",
     },
@@ -327,9 +326,11 @@ SE IL JSON RISCHIA DI ESSERE TROPPO LUNGO:
 
     const contentHtml = renderHtml(out, shopLink);
 
+    // ✅ COMPATIBILITÀ: molte UI vecchie leggono "content" e non "contentHtml"
     return res.status(200).json({
       ...out,
-      contentHtml,
+      content: contentHtml,   // <-- aggiunto: così la UI mostra subito
+      contentHtml,            // <-- manteniamo anche il nuovo campo
       debug: { model: "gemini-2.5-pro" },
     });
   } catch (e: any) {
