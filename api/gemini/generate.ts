@@ -16,11 +16,11 @@ REGOLE NON NEGOZIABILI:
 3) SCENA DI PARTITA REALE: racconta una decisione concreta con dilemma.
 4) TONO ANALITICO: documentario tecnico, niente Wikipedia.
 5) DENSITÀ: ogni paragrafo risponde a: cosa succede? perché conta? cosa cambia in partita?
-6) LUNGHEZZA: mira a ~900–1200 parole (dense, niente riempitivi).
 
 IMPORTANTISSIMO:
+- Output SOLO JSON valido.
 - NON produrre HTML nel JSON.
-- Output: SOLO JSON valido (application/json), niente markdown, niente testo extra.
+- NON aggiungere testo fuori dal JSON.
 `;
 
 // ----------------- HELPERS (JSON safe) -----------------
@@ -29,6 +29,7 @@ function stripCodeFences(s: string) {
   return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
+// Estrae il primo oggetto JSON bilanciando graffe (robusto anche se c’è testo prima/dopo)
 function extractFirstJsonObject(text: string): string | null {
   const cleaned = stripCodeFences(text);
   const start = cleaned.indexOf("{");
@@ -41,12 +42,12 @@ function extractFirstJsonObject(text: string): string | null {
     if (ch === "}") depth--;
     if (depth === 0) return cleaned.slice(start, i + 1);
   }
-  return null;
+  return null; // troncato => non trova chiusura
 }
 
-function safeParseJson(text: string) {
+function safeParseJson(raw: string) {
   try {
-    return { ok: true as const, value: JSON.parse(text) };
+    return { ok: true as const, value: JSON.parse(raw) };
   } catch (e: any) {
     return { ok: false as const, error: e?.message ?? "JSON.parse error" };
   }
@@ -78,18 +79,6 @@ function htmlEscape(s: string) {
 
 // ----------------- HTML RENDERER (structure locked) -----------------
 
-type SectionId =
-  | "hero"
-  | "origin"
-  | "system"
-  | "turn"
-  | "different"
-  | "table"
-  | "learning"
-  | "target"
-  | "faq"
-  | "closing";
-
 function renderHtml(draft: any, shopLink: string) {
   const title = draft?.title || "";
   const excerpt = draft?.excerpt || "";
@@ -100,6 +89,9 @@ function renderHtml(draft: any, shopLink: string) {
     .filter((s: any) => s?.id && s?.h2)
     .map((s: any) => `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`)
     .join("");
+
+  const heroCtaUrl =
+    (draft?.ctas || []).find((c: any) => c?.placement === "hero")?.url || shopLink;
 
   const sectionsHtml = sections
     .map((s: any, idx: number) => {
@@ -143,9 +135,6 @@ function renderHtml(draft: any, shopLink: string) {
     })
     .join("\n");
 
-  const heroCtaUrl =
-    (draft?.ctas || []).find((c: any) => c?.placement === "hero")?.url || shopLink;
-
   return `
 <article class="fg-blog">
   <style>
@@ -188,7 +177,23 @@ function renderHtml(draft: any, shopLink: string) {
   `.trim();
 }
 
-// ----------------- MAIN HANDLER -----------------
+// ----------------- GEMINI CALL (with retry) -----------------
+
+async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
+  const model = genAI.getGenerativeModel({
+    model: "gemini-2.5-pro",
+    generationConfig: {
+      temperature: 0.2,
+      topP: 0.9,
+      // Alziamo per evitare risposte tronche
+      maxOutputTokens: 8000,
+      responseMimeType: "application/json",
+    },
+  });
+
+  const result = await model.generateContent(prompt);
+  return result.response.text();
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -202,7 +207,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!data?.name) return res.status(400).json({ error: "Missing data.name" });
 
     const shopLink = extras.shopLink || "https://www.frogames.it/";
-
     const publisher =
       extras.publisherInfo || (data.publishers && data.publishers[0]) || "Non specificato";
 
@@ -220,7 +224,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? data.artists.join(", ")
           : "Artista Ignoto";
 
-    const prompt = `
+    // Prompt con LIMITI anti-troncamento
+    const basePrompt = `
 ${BLOG_STRATEGY}
 
 GIOCO: "${data.name}"
@@ -233,7 +238,7 @@ DATI TECNICI (contesto, non inventare oltre):
 - Durata: ${data.playingTime} min
 - Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : "Strategia"}
 
-NOTE (per la scena di partita):
+NOTE (per scena di partita):
 "${extras.enrichmentNotes || "Descrivi tensione e scelte difficili. Non inventare facts specifici non forniti."}"
 
 OBIETTIVO:
@@ -249,8 +254,8 @@ Genera SOLO JSON valido con questo schema (Niente HTML!):
     {
       "id": "hero"|"origin"|"system"|"turn"|"different"|"table"|"learning"|"target"|"faq"|"closing",
       "h2": string,
-      "hook": string (1 frase breve cinematografica),
-      "paragraphs": string[] (paragrafi brevi, densi)
+      "hook": string (1 frase breve),
+      "paragraphs": string[] (paragrafi brevi)
     }
   ],
   "faq": [{ "q": string, "a": string }] (0-8, SOLO se sei sicuro; altrimenti []),
@@ -260,63 +265,72 @@ Genera SOLO JSON valido con questo schema (Niente HTML!):
   ]
 }
 
-Regole SEO testo:
-- inserisci naturalmente “gioco da tavolo” + 1-2 varianti (es. “gioco strategico”, “eurogame”) senza spam.
-- seoTitle/metaDescription: non superare i limiti.
+LIMITI PER EVITARE OUTPUT TRONCATO:
+- sections deve essere ESATTAMENTE 10 elementi (uno per id, nell’ordine sopra).
+- Ogni section.paragraphs: 2–4 paragrafi massimo.
+- Ogni paragrafo: massimo ~350 caratteri.
+- FAQ massimo 5.
+- NON aggiungere testo fuori dal JSON.
     `.trim();
 
     const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-2.5-pro",
-      generationConfig: {
-        temperature: 0.2,
-        topP: 0.9,
-        maxOutputTokens: 5000,
-        responseMimeType: "application/json",
-      },
-    });
 
-    const result = await model.generateContent(prompt);
-    const text = result.response.text();
+    // 1) try
+    let text = await callGeminiJson(genAI, basePrompt);
 
-    // 1) parse diretto
-    const direct = safeParseJson(text);
-    let out: any | null = direct.ok ? direct.value : null;
+    // parse attempt: prova diretto, poi estratto
+    const tryParse = (t: string) => {
+      const direct = safeParseJson(stripCodeFences(t));
+      if (direct.ok) return direct.value;
 
-    // 2) fallback: estrai oggetto JSON
+      const extracted = extractFirstJsonObject(t);
+      if (!extracted) return null;
+
+      const parsed = safeParseJson(extracted);
+      return parsed.ok ? parsed.value : null;
+    };
+
+    let out = tryParse(text);
+
+    // 2) retry una volta (più corto) se troncato/non-JSON
     if (!out) {
-      const raw = extractFirstJsonObject(text);
-      if (raw) {
-        const extracted = safeParseJson(raw);
-        if (extracted.ok) out = extracted.value;
-      }
+      const retryPrompt = basePrompt + `
+
+SE IL JSON RISCHIA DI ESSERE TROPPO LUNGO:
+- riduci a 2 paragrafi per sezione
+- mantieni comunque 10 sezioni
+- NON superare i limiti
+- output SOLO JSON
+`;
+      text = await callGeminiJson(genAI, retryPrompt);
+      out = tryParse(text);
     }
 
     if (!out) {
       return res.status(500).json({
-        error: "Gemini returned non-JSON output",
-        debug: { rawFirst2000: text.slice(0, 2000) },
+        error: "Gemini returned non-JSON output (likely truncated).",
+        hint: "Aumenta maxOutputTokens o riduci paragrafi per sezione. Nel dubbio: usa retry e limiti più stretti.",
+        debug: { rawFirst2000: stripCodeFences(text).slice(0, 2000) },
       });
     }
 
-    // hard clamps + normalizzazioni
+    // clamps SEO
     out.title = out.title || data.name;
     out.slug = out.slug || slugify(out.title || data.name);
     out.seoTitle = clampLen(String(out.seoTitle || out.title).replace(/:/g, "–"), 70);
     out.metaDescription = clampLen(String(out.metaDescription || out.excerpt || ""), 160);
 
-    // sanity arrays
+    // safety arrays
     if (!Array.isArray(out.sections)) out.sections = [];
     if (!Array.isArray(out.faq)) out.faq = [];
     if (!Array.isArray(out.ctas)) out.ctas = [];
 
-    // genera HTML lato server (structure always same)
     const contentHtml = renderHtml(out, shopLink);
 
-    // risposta finale
     return res.status(200).json({
       ...out,
-      contentHtml, // <— HTML stabile e sempre valido
+      contentHtml,
+      debug: { model: "gemini-2.5-pro" },
     });
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
