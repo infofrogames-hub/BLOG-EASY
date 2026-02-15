@@ -3,38 +3,30 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+// ----------------- CONFIG -----------------
+
 const BLOG_STRATEGY = `
-SEI UN ANALISTA TECNICO DI GIOCHI DA TAVOLO. La tua missione è scrivere un'analisi narrativa profonda. 
+SEI UN ANALISTA TECNICO DI GIOCHI DA TAVOLO. La tua missione è scrivere un'analisi narrativa profonda.
 NON stai scrivendo marketing, NON stai scrivendo una biografia, NON stai vendendo nulla.
 Il lettore deve finire l'articolo capendo COME si gioca, PERCHÉ è interessante e COSA lo rende unico.
 
 REGOLE NON NEGOZIABILI:
-1. NIENTE FRASI VUOTE: Vietato usare "straordinario", "rivoluzionario", "fondamentale" o "importante" senza un esempio concreto.
-2. SPIEGA LE CONSEGUENZE: Ogni regola descritta deve mostrare il suo effetto al tavolo.
-3. SCENA DI PARTITA REALE: Racconta una decisione concreta.
-4. TONO ANALITICO: Documentario tecnico. Niente tono da Wikipedia.
-5. DENSITÀ: Ogni paragrafo deve rispondere a: Cosa succede? Perché conta? Cosa cambia nella partita?
-6. LUNGHEZZA: Minimo 900-1200 parole dense di contenuto. Niente riempitivi.
+1) NIENTE FRASI VUOTE: vietato usare parole tipo "straordinario" senza esempio concreto.
+2) SPIEGA LE CONSEGUENZE: ogni regola descritta deve mostrare l'effetto al tavolo.
+3) SCENA DI PARTITA REALE: racconta una decisione concreta con dilemma.
+4) TONO ANALITICO: documentario tecnico, niente Wikipedia.
+5) DENSITÀ: ogni paragrafo risponde a: cosa succede? perché conta? cosa cambia in partita?
+6) LUNGHEZZA: mira a ~900–1200 parole (dense, niente riempitivi).
 
-STRUTTURA OBBLIGATORIA (H2):
-- <h2>Cos’è [Nome Gioco]</h2>
-- <h2>Da dove nasce il gioco</h2>
-- <h2>Il cuore del sistema</h2>
-- <h2>Un turno tipo</h2>
-- <h2>Cosa lo rende diverso</h2>
-- <h2>Esperienza al tavolo</h2>
-- <h2>Curva di apprendimento</h2>
-- <h2>Per chi è questo gioco</h2>
-- <h2>FAQ</h2>
-- <h2>Chiusura</h2>
+IMPORTANTISSIMO:
+- NON produrre HTML nel JSON.
+- Output: SOLO JSON valido (application/json), niente markdown, niente testo extra.
 `;
 
-// --- Helpers robusti (JSON) ---
-// 1) prova a usare direttamente JSON puro (con responseMimeType)
-// 2) se Gemini ti risponde con testo "sporco", estrai la prima { ... } bilanciata
+// ----------------- HELPERS (JSON safe) -----------------
 
 function stripCodeFences(s: string) {
-  return s.replace(/```json/gi, "").replace(/```/g, "").trim();
+  return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
 function extractFirstJsonObject(text: string): string | null {
@@ -60,6 +52,144 @@ function safeParseJson(text: string) {
   }
 }
 
+function slugify(input: string) {
+  return String(input || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\w\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-")
+    .slice(0, 80);
+}
+
+function clampLen(s: string, max: number) {
+  const str = String(s || "");
+  if (!str) return "";
+  return str.length <= max ? str : str.slice(0, max - 1).trimEnd() + "…";
+}
+
+function htmlEscape(s: string) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// ----------------- HTML RENDERER (structure locked) -----------------
+
+type SectionId =
+  | "hero"
+  | "origin"
+  | "system"
+  | "turn"
+  | "different"
+  | "table"
+  | "learning"
+  | "target"
+  | "faq"
+  | "closing";
+
+function renderHtml(draft: any, shopLink: string) {
+  const title = draft?.title || "";
+  const excerpt = draft?.excerpt || "";
+  const sections = Array.isArray(draft?.sections) ? draft.sections : [];
+  const faq = Array.isArray(draft?.faq) ? draft.faq : [];
+
+  const toc = sections
+    .filter((s: any) => s?.id && s?.h2)
+    .map((s: any) => `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`)
+    .join("");
+
+  const sectionsHtml = sections
+    .map((s: any, idx: number) => {
+      const openAttr = idx === 0 ? " open" : "";
+      const paras = (Array.isArray(s?.paragraphs) ? s.paragraphs : [])
+        .filter((p: any) => typeof p === "string" && p.trim())
+        .map((p: string) => `<p>${htmlEscape(p)}</p>`)
+        .join("");
+
+      const faqHtml =
+        s?.id === "faq" && faq.length
+          ? `<div class="fg-faq">
+              ${faq
+                .slice(0, 8)
+                .filter((f: any) => f?.q && f?.a)
+                .map(
+                  (f: any) => `
+                  <details class="fg-faq__item">
+                    <summary class="fg-faq__q">${htmlEscape(f.q)}</summary>
+                    <div class="fg-faq__a"><p>${htmlEscape(f.a)}</p></div>
+                  </details>`
+                )
+                .join("")}
+            </div>`
+          : "";
+
+      return `
+<section id="${htmlEscape(s.id)}" class="fg-sec">
+  <details class="fg-acc"${openAttr}>
+    <summary class="fg-acc__sum">
+      <span class="fg-acc__h2">${htmlEscape(s.h2 || "")}</span>
+      <span class="fg-acc__hook">${htmlEscape(s.hook || "")}</span>
+    </summary>
+    <div class="fg-acc__body">
+      ${paras}
+      ${faqHtml}
+    </div>
+  </details>
+</section>
+      `.trim();
+    })
+    .join("\n");
+
+  const heroCtaUrl =
+    (draft?.ctas || []).find((c: any) => c?.placement === "hero")?.url || shopLink;
+
+  return `
+<article class="fg-blog">
+  <style>
+    .fg-blog{font-family:inherit;line-height:1.7;max-width:900px;margin:0 auto;padding:16px}
+    .fg-hero{border:1px solid rgba(0,0,0,.12);border-radius:16px;padding:14px;margin-bottom:16px}
+    .fg-kicker{opacity:.8;font-size:.95rem}
+    .fg-title{margin:.2rem 0 .4rem;font-size:1.7rem;line-height:1.2}
+    .fg-excerpt{margin:0}
+    .fg-btn{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.18);text-decoration:none;font-weight:800}
+    .fg-toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px}
+    .fg-toc__a{font-size:.92rem;text-decoration:none;border:1px solid rgba(0,0,0,.14);padding:6px 10px;border-radius:999px}
+    .fg-sec{margin:12px 0}
+    .fg-acc{border:1px solid rgba(0,0,0,.12);border-radius:14px;overflow:hidden}
+    .fg-acc__sum{cursor:pointer;padding:12px 12px;list-style:none}
+    .fg-acc__sum::-webkit-details-marker{display:none}
+    .fg-acc__h2{display:block;font-weight:900}
+    .fg-acc__hook{display:block;opacity:.85;margin-top:4px}
+    .fg-acc__body{padding:0 12px 12px}
+    .fg-faq{margin-top:10px}
+    .fg-faq__item{border:1px solid rgba(0,0,0,.12);border-radius:14px;padding:10px 12px;margin:10px 0}
+    .fg-faq__q{cursor:pointer;font-weight:900}
+    .fg-faq__a p{margin:.6rem 0 0}
+  </style>
+
+  <header class="fg-hero">
+    <div class="fg-kicker">Blog FroGames • Mini-documentario da tavolo</div>
+    <h1 class="fg-title">${htmlEscape(title)}</h1>
+    <p class="fg-excerpt">${htmlEscape(excerpt)}</p>
+    <a class="fg-btn" href="${htmlEscape(heroCtaUrl)}" rel="nofollow">Scoprilo su FroGames</a>
+  </header>
+
+  <nav class="fg-toc" aria-label="Indice">${toc}</nav>
+
+  ${sectionsHtml}
+
+  <footer class="fg-sec">
+    <a class="fg-btn" href="${htmlEscape(shopLink)}" rel="nofollow">Vai allo shop FroGames</a>
+  </footer>
+</article>
+  `.trim();
+}
+
+// ----------------- MAIN HANDLER -----------------
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
@@ -69,8 +199,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data, extras } = (req.body ?? {}) as any;
     if (!data || !extras) return res.status(400).json({ error: "Missing data/extras" });
-
     if (!data?.name) return res.status(400).json({ error: "Missing data.name" });
+
+    const shopLink = extras.shopLink || "https://www.frogames.it/";
 
     const publisher =
       extras.publisherInfo || (data.publishers && data.publishers[0]) || "Non specificato";
@@ -89,17 +220,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? data.artists.join(", ")
           : "Artista Ignoto";
 
-    const shopLink = extras.shopLink || "https://www.frogames.it/";
-    const enrichmentNotes = extras.enrichmentNotes || "Descrivi la tensione e le scelte difficili.";
-
-    const prompt = `RISPOSTA: restituisci SOLO JSON valido. Niente testo, niente markdown, niente commenti.
-Se un dato è sconosciuto, usa stringa vuota "" o array [].
-
-SCRIVI UN'ANALISI NARRATIVA PROFONDA DI 1200 PAROLE sul gioco: "${data.name}".
-
+    const prompt = `
 ${BLOG_STRATEGY}
 
-DATI TECNICI:
+GIOCO: "${data.name}"
+
+DATI TECNICI (contesto, non inventare oltre):
 - Editore: ${publisher}
 - Autori: ${designers}
 - Artisti: ${artists}
@@ -107,23 +233,45 @@ DATI TECNICI:
 - Durata: ${data.playingTime} min
 - Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : "Strategia"}
 
-NOTE DALL'AUTORE (Scene di partita):
-"${enrichmentNotes}"
+NOTE (per la scena di partita):
+"${extras.enrichmentNotes || "Descrivi tensione e scelte difficili. Non inventare facts specifici non forniti."}"
 
-LINK SHOP: ${shopLink}
+OBIETTIVO:
+Genera SOLO JSON valido con questo schema (Niente HTML!):
 
-Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML denso), telegramPost, jsonLd.
-`;
+{
+  "title": string,
+  "slug": string,
+  "seoTitle": string (<=70, usa “–” mai “:”),
+  "metaDescription": string (<=160),
+  "excerpt": string (1-2 frasi),
+  "sections": [
+    {
+      "id": "hero"|"origin"|"system"|"turn"|"different"|"table"|"learning"|"target"|"faq"|"closing",
+      "h2": string,
+      "hook": string (1 frase breve cinematografica),
+      "paragraphs": string[] (paragrafi brevi, densi)
+    }
+  ],
+  "faq": [{ "q": string, "a": string }] (0-8, SOLO se sei sicuro; altrimenti []),
+  "ctas": [
+    { "label": "Scoprilo su FroGames", "url": "${shopLink}", "placement": "hero" },
+    { "label": "Vai allo shop FroGames", "url": "${shopLink}", "placement": "closing" }
+  ]
+}
+
+Regole SEO testo:
+- inserisci naturalmente “gioco da tavolo” + 1-2 varianti (es. “gioco strategico”, “eurogame”) senza spam.
+- seoTitle/metaDescription: non superare i limiti.
+    `.trim();
 
     const genAI = new GoogleGenerativeAI(apiKey);
-
-    // ✅ FIX: forziamo risposta JSON "vera" + riduciamo variabilità
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-pro",
       generationConfig: {
         temperature: 0.2,
         topP: 0.9,
-        maxOutputTokens: 6000,
+        maxOutputTokens: 5000,
         responseMimeType: "application/json",
       },
     });
@@ -131,41 +279,50 @@ Ritorna JSON con: title, slug, seoTitle, metaDescription, excerpt, content (HTML
     const result = await model.generateContent(prompt);
     const text = result.response.text();
 
-    // 1) prova parse diretto
+    // 1) parse diretto
     const direct = safeParseJson(text);
-    if (direct.ok) return res.status(200).json(direct.value);
+    let out: any | null = direct.ok ? direct.value : null;
 
-    // 2) fallback: estrai il primo oggetto JSON bilanciato
-    const raw = extractFirstJsonObject(text);
-    if (!raw) {
+    // 2) fallback: estrai oggetto JSON
+    if (!out) {
+      const raw = extractFirstJsonObject(text);
+      if (raw) {
+        const extracted = safeParseJson(raw);
+        if (extracted.ok) out = extracted.value;
+      }
+    }
+
+    if (!out) {
       return res.status(500).json({
-        error: `Gemini returned non-JSON output: ${direct.error}`,
-        hint: "Se persiste, passa a 'struttura->render HTML lato server' (soluzione definitiva).",
+        error: "Gemini returned non-JSON output",
         debug: { rawFirst2000: text.slice(0, 2000) },
       });
     }
 
-    const extracted = safeParseJson(raw);
-    if (!extracted.ok) {
-      return res.status(500).json({
-        error: `JSON.parse failed: ${extracted.error}`,
-        hint:
-          "Gemini ha prodotto JSON non valido (tipico: virgolette non escapate dentro content). " +
-          "Con responseMimeType di solito si risolve; se persiste, passa a 'struttura->render HTML lato server'.",
-        debug: {
-          rawFirst4000: text.slice(0, 4000),
-          extractedFirst4000: raw.slice(0, 4000),
-        },
-      });
-    }
+    // hard clamps + normalizzazioni
+    out.title = out.title || data.name;
+    out.slug = out.slug || slugify(out.title || data.name);
+    out.seoTitle = clampLen(String(out.seoTitle || out.title).replace(/:/g, "–"), 70);
+    out.metaDescription = clampLen(String(out.metaDescription || out.excerpt || ""), 160);
 
-    return res.status(200).json(extracted.value);
+    // sanity arrays
+    if (!Array.isArray(out.sections)) out.sections = [];
+    if (!Array.isArray(out.faq)) out.faq = [];
+    if (!Array.isArray(out.ctas)) out.ctas = [];
+
+    // genera HTML lato server (structure always same)
+    const contentHtml = renderHtml(out, shopLink);
+
+    // risposta finale
+    return res.status(200).json({
+      ...out,
+      contentHtml, // <— HTML stabile e sempre valido
+    });
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint:
-        "Controlla GEMINI_API_KEY, body {data, extras}, e se vedi JSON.parse error è quasi sempre colpa di virgolette non escapate dentro content (HTML).",
+      hint: "Controlla GEMINI_API_KEY e body {data, extras}.",
     });
   }
 }
