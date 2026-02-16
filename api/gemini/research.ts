@@ -51,7 +51,8 @@ function clamp(s: string, max: number) {
 }
 
 function buildBggHeaders() {
-  const token = (process.env.BGG_XML_API_TOKEN || "").trim();
+  // ✅ usa il nome variabile che hai davvero su Vercel
+  const token = (process.env.GG_XML_API_TOKEN || "").trim();
 
   const headers: Record<string, string> = {
     "user-agent":
@@ -64,9 +65,7 @@ function buildBggHeaders() {
 }
 
 async function fetchBggThingXml(bggId: string) {
-  // ✅ host senza www
   const url = `https://boardgamegeek.com/xmlapi2/thing?id=${encodeURIComponent(bggId)}&stats=1`;
-
   const { headers, hasToken } = buildBggHeaders();
 
   const ac = new AbortController();
@@ -111,7 +110,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!fetched.ok) {
       const hint401 =
         fetched.status === 401
-          ? "Token BGG mancante o non valido. Verifica env BGG_XML_API_TOKEN su Vercel e fai Redeploy."
+          ? "Token BGG mancante o non valido (GG_XML_API_TOKEN). Verifica env su Vercel e fai Redeploy."
           : "BGG può rate-limitare o essere lento. Riprova tra poco.";
 
       return res.status(502).json({
