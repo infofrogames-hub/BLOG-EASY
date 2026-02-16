@@ -79,12 +79,15 @@ function htmlEscape(s: string) {
 }
 
 function buildBggHeaders() {
-  const token = (process.env.BGG_XML_API_TOKEN || "").trim();
+  // ✅ usa il nome variabile che hai davvero su Vercel
+  const token = (process.env.GG_XML_API_TOKEN || "").trim();
+
   const headers: Record<string, string> = {
     "user-agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
     accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
   };
+
   if (token) headers.authorization = `Bearer ${token}`;
   return { headers, hasToken: !!token };
 }
@@ -328,7 +331,7 @@ function renderHtml(draft: any, shopLink: string) {
   `.trim();
 }
 
-// ----------------- GEMINI CALL (fallback models) -----------------
+// ----------------- GEMINI CALL -----------------
 
 async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
   const candidates = [
@@ -344,11 +347,7 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
     try {
       const model = genAI.getGenerativeModel({
         model: modelName,
-        generationConfig: {
-          temperature: 0.2,
-          topP: 0.9,
-          maxOutputTokens: 5000,
-        },
+        generationConfig: { temperature: 0.2, topP: 0.9, maxOutputTokens: 5000 },
       });
 
       const ac = new AbortController();
@@ -370,9 +369,7 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
     }
   }
 
-  throw new Error(
-    `Gemini call failed on all models. Last error: ${lastErr?.message || String(lastErr)}`
-  );
+  throw new Error(`Gemini call failed on all models. Last error: ${lastErr?.message || String(lastErr)}`);
 }
 
 // ----------------- HANDLER -----------------
@@ -390,7 +387,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const idOrUrl: string | undefined = extras.idOrUrl || body.idOrUrl || data.idOrUrl;
 
-    // Se manca data.name, prova a ricavarlo dal link BGG
     if (!data?.name) {
       if (!idOrUrl) return res.status(400).json({ error: "Missing data.name or idOrUrl" });
 
@@ -398,7 +394,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!bgg || !bgg.ok) {
         const hint401 =
           bgg?.status === 401
-            ? "Token BGG mancante o non valido. Verifica env BGG_XML_API_TOKEN su Vercel e fai Redeploy."
+            ? "Token BGG mancante o non valido (GG_XML_API_TOKEN). Verifica env su Vercel e fai Redeploy."
             : "Non riesco a leggere i dati da BGG (rate limit o errore).";
         return res.status(502).json({
           error: "BGG fetch failed",
@@ -420,7 +416,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       extras.rawResearchText = bgg.rawResearchText;
     }
 
-    // ✅ RESEARCH: se manca, proviamo a costruirlo dal link
     let rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
@@ -521,7 +516,6 @@ LIMITI:
 
     if (!out) {
       const retryPrompt = basePrompt + `
-
 SE STAI SBORDANDO:
 - fai 2 paragrafi per sezione
 - hook più corti
@@ -535,10 +529,7 @@ SE STAI SBORDANDO:
     if (!out) {
       return res.status(500).json({
         error: "Gemini returned non-JSON output (likely truncated or malformed).",
-        debug: {
-          modelTried: result.model,
-          rawFirst2000: stripCodeFences(result.text).slice(0, 2000),
-        },
+        debug: { modelTried: result.model, rawFirst2000: stripCodeFences(result.text).slice(0, 2000) },
       });
     }
 
@@ -567,8 +558,7 @@ SE STAI SBORDANDO:
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint:
-        "Controlla GEMINI_API_KEY e BGG_XML_API_TOKEN su Vercel (Production) + Redeploy.",
+      hint: "Controlla GEMINI_API_KEY e GG_XML_API_TOKEN su Vercel (Production) + Redeploy.",
     });
   }
 }
