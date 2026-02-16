@@ -6,22 +6,21 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 // ----------------- CONFIG -----------------
 
 const BLOG_STRATEGY = `
-SEI UN ANALISTA TECNICO DI GIOCHI DA TAVOLO. La tua missione è scrivere un'analisi narrativa profonda.
-NON stai scrivendo marketing, NON stai scrivendo una biografia, NON stai vendendo nulla.
-Il lettore deve finire l'articolo capendo COME si gioca, PERCHÉ è interessante e COSA lo rende unico.
+SEI UN ANALISTA TECNICO DI GIOCHI DA TAVOLO. Scrivi come mini-documentario: scene, scelte, conseguenze.
+NON marketing. NON biografia. NON Wikipedia.
 
 REGOLE NON NEGOZIABILI:
 1) NIENTE FRASI VUOTE: vietato usare parole tipo "straordinario" senza esempio concreto.
 2) SPIEGA LE CONSEGUENZE: ogni regola descritta deve mostrare l'effetto al tavolo.
 3) SCENA DI PARTITA REALE: racconta una decisione concreta con dilemma.
-4) TONO ANALITICO: documentario tecnico, niente Wikipedia.
-5) DENSITÀ: ogni paragrafo risponde a: cosa succede? perché conta? cosa cambia in partita?
+4) TONO ANALITICO: denso, preciso, leggibile.
+5) ANTI-INVENZIONI: se un dettaglio NON è nel RESEARCH, non lo dire.
 
 IMPORTANTISSIMO:
 - Output SOLO JSON valido.
 - NON produrre HTML nel JSON.
 - NON aggiungere testo fuori dal JSON.
-`;
+`.trim();
 
 // ----------------- HELPERS (JSON safe) -----------------
 
@@ -29,7 +28,7 @@ function stripCodeFences(s: string) {
   return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
-// Estrae il primo oggetto JSON bilanciando graffe (robusto anche se c’è testo prima/dopo)
+// Estrae il primo oggetto JSON bilanciando graffe
 function extractFirstJsonObject(text: string): string | null {
   const cleaned = stripCodeFences(text);
   const start = cleaned.indexOf("{");
@@ -42,7 +41,7 @@ function extractFirstJsonObject(text: string): string | null {
     if (ch === "}") depth--;
     if (depth === 0) return cleaned.slice(start, i + 1);
   }
-  return null; // troncato => non trova chiusura
+  return null;
 }
 
 function safeParseJson(raw: string) {
@@ -87,7 +86,10 @@ function renderHtml(draft: any, shopLink: string) {
 
   const toc = sections
     .filter((s: any) => s?.id && s?.h2)
-    .map((s: any) => `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`)
+    .map(
+      (s: any) =>
+        `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`
+    )
     .join("");
 
   const heroCtaUrl =
@@ -105,7 +107,7 @@ function renderHtml(draft: any, shopLink: string) {
         s?.id === "faq" && faq.length
           ? `<div class="fg-faq">
               ${faq
-                .slice(0, 8)
+                .slice(0, 6)
                 .filter((f: any) => f?.q && f?.a)
                 .map(
                   (f: any) => `
@@ -138,24 +140,25 @@ function renderHtml(draft: any, shopLink: string) {
   return `
 <article class="fg-blog">
   <style>
-    .fg-blog{font-family:inherit;line-height:1.7;max-width:900px;margin:0 auto;padding:16px}
-    .fg-hero{border:1px solid rgba(0,0,0,.12);border-radius:16px;padding:14px;margin-bottom:16px}
-    .fg-kicker{opacity:.8;font-size:.95rem}
-    .fg-title{margin:.2rem 0 .4rem;font-size:1.7rem;line-height:1.2}
-    .fg-excerpt{margin:0}
-    .fg-btn{display:inline-block;margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.18);text-decoration:none;font-weight:800}
+    .fg-blog{font-family:inherit;line-height:1.7;max-width:920px;margin:0 auto;padding:18px}
+    .fg-hero{border:1px solid rgba(0,0,0,.10);border-radius:18px;padding:16px 16px 14px;margin-bottom:16px;background:rgba(0,0,0,.02)}
+    .fg-kicker{opacity:.8;font-size:.92rem;letter-spacing:.2px}
+    .fg-title{margin:.25rem 0 .5rem;font-size:1.75rem;line-height:1.18}
+    .fg-excerpt{margin:.1rem 0 0}
+    .fg-btn{display:inline-block;margin-top:12px;padding:10px 14px;border-radius:12px;border:1px solid rgba(0,0,0,.16);text-decoration:none;font-weight:900}
     .fg-toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 18px}
     .fg-toc__a{font-size:.92rem;text-decoration:none;border:1px solid rgba(0,0,0,.14);padding:6px 10px;border-radius:999px}
     .fg-sec{margin:12px 0}
-    .fg-acc{border:1px solid rgba(0,0,0,.12);border-radius:14px;overflow:hidden}
-    .fg-acc__sum{cursor:pointer;padding:12px 12px;list-style:none}
+    .fg-acc{border:1px solid rgba(0,0,0,.10);border-radius:16px;overflow:hidden;background:#fff}
+    .fg-acc__sum{cursor:pointer;padding:14px 14px;list-style:none}
     .fg-acc__sum::-webkit-details-marker{display:none}
-    .fg-acc__h2{display:block;font-weight:900}
-    .fg-acc__hook{display:block;opacity:.85;margin-top:4px}
-    .fg-acc__body{padding:0 12px 12px}
+    .fg-acc__h2{display:block;font-weight:950}
+    .fg-acc__hook{display:block;opacity:.78;margin-top:4px}
+    .fg-acc__body{padding:2px 14px 14px}
+    .fg-acc__body p{margin:.7rem 0}
     .fg-faq{margin-top:10px}
-    .fg-faq__item{border:1px solid rgba(0,0,0,.12);border-radius:14px;padding:10px 12px;margin:10px 0}
-    .fg-faq__q{cursor:pointer;font-weight:900}
+    .fg-faq__item{border:1px solid rgba(0,0,0,.10);border-radius:14px;padding:10px 12px;margin:10px 0;background:rgba(0,0,0,.02)}
+    .fg-faq__q{cursor:pointer;font-weight:950}
     .fg-faq__a p{margin:.6rem 0 0}
   </style>
 
@@ -185,7 +188,7 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
     generationConfig: {
       temperature: 0.2,
       topP: 0.9,
-      maxOutputTokens: 8000,
+      maxOutputTokens: 6000,
       responseMimeType: "application/json",
     },
   });
@@ -205,40 +208,55 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!data || !extras) return res.status(400).json({ error: "Missing data/extras" });
     if (!data?.name) return res.status(400).json({ error: "Missing data.name" });
 
+    // ✅ RESEARCH OBBLIGATORIO (è la tua “verità”)
+    const rawResearchText =
+      (extras.rawResearchText && String(extras.rawResearchText)) ||
+      (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
+      "";
+
+    if (!rawResearchText.trim()) {
+      return res.status(400).json({
+        error: "Missing extras.rawResearchText",
+        hint: "Chiama prima /api/gemini/research e passa extras.rawResearchText = response.rawResearchText",
+      });
+    }
+
     const shopLink = extras.shopLink || "https://www.frogames.it/";
     const publisher =
-      extras.publisherInfo || (data.publishers && data.publishers[0]) || "Non specificato";
+      extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
 
     const designers =
       extras.designers?.length > 0
         ? extras.designers.map((d: any) => d.name).join(", ")
         : data.designers
           ? data.designers.join(", ")
-          : "Autore Ignoto";
+          : "";
 
     const artists =
       extras.artists?.length > 0
         ? extras.artists.map((a: any) => a.name).join(", ")
         : data.artists
           ? data.artists.join(", ")
-          : "Artista Ignoto";
+          : "";
 
-    // Prompt con LIMITI anti-troncamento
     const basePrompt = `
 ${BLOG_STRATEGY}
 
 GIOCO: "${data.name}"
 
-DATI TECNICI (contesto, non inventare oltre):
+DATI TECNICI (contesto: NON inventare oltre a questo + RESEARCH):
 - Editore: ${publisher}
 - Autori: ${designers}
 - Artisti: ${artists}
 - Giocatori: ${data.minPlayers}-${data.maxPlayers}
 - Durata: ${data.playingTime} min
-- Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : "Strategia"}
+- Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : ""}
 
-NOTE (per scena di partita):
-"${extras.enrichmentNotes || "Descrivi tensione e scelte difficili. Non inventare facts specifici non forniti."}"
+RESEARCH (questa è la tua unica verità; non aggiungere dettagli fuori da qui):
+"""${rawResearchText}"""
+
+NOTE (solo per “scena di partita” se coerente col research):
+"${extras.enrichmentNotes || ""}"
 
 OBIETTIVO:
 Genera SOLO JSON valido con questo schema (Niente HTML!):
@@ -254,30 +272,26 @@ Genera SOLO JSON valido con questo schema (Niente HTML!):
       "id": "hero"|"origin"|"system"|"turn"|"different"|"table"|"learning"|"target"|"faq"|"closing",
       "h2": string,
       "hook": string (1 frase breve),
-      "paragraphs": string[] (paragrafi brevi)
+      "paragraphs": string[] (2-3 paragrafi, max ~330 caratteri ciascuno)
     }
   ],
-  "faq": [{ "q": string, "a": string }] (0-8, SOLO se sei sicuro; altrimenti []),
+  "faq": [{ "q": string, "a": string }] (0-6, SOLO se il RESEARCH lo supporta; altrimenti []),
   "ctas": [
     { "label": "Scoprilo su FroGames", "url": "${shopLink}", "placement": "hero" },
     { "label": "Vai allo shop FroGames", "url": "${shopLink}", "placement": "closing" }
   ]
 }
 
-LIMITI PER EVITARE OUTPUT TRONCATO:
-- sections deve essere ESATTAMENTE 10 elementi (uno per id, nell’ordine sopra).
-- Ogni section.paragraphs: 2–4 paragrafi massimo.
-- Ogni paragrafo: massimo ~350 caratteri.
-- FAQ massimo 5.
-- NON aggiungere testo fuori dal JSON.
-    `.trim();
+LIMITI:
+- sections deve essere ESATTAMENTE 10 elementi nell’ordine: hero, origin, system, turn, different, table, learning, target, faq, closing
+- NON aggiungere testo fuori dal JSON
+`.trim();
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
     // 1) try
     let text = await callGeminiJson(genAI, basePrompt);
 
-    // parse attempt: prova diretto, poi estratto
     const tryParse = (t: string) => {
       const direct = safeParseJson(stripCodeFences(t));
       if (direct.ok) return direct.value;
@@ -291,14 +305,14 @@ LIMITI PER EVITARE OUTPUT TRONCATO:
 
     let out = tryParse(text);
 
-    // 2) retry una volta (più corto) se troncato/non-JSON
+    // 2) retry (più “corto”) se non parse
     if (!out) {
       const retryPrompt = basePrompt + `
 
-SE IL JSON RISCHIA DI ESSERE TROPPO LUNGO:
-- riduci a 2 paragrafi per sezione
-- mantieni comunque 10 sezioni
-- NON superare i limiti
+SE STAI SBORDANDO:
+- fai 2 paragrafi per sezione
+- hook più corti
+- faq massimo 3
 - output SOLO JSON
 `;
       text = await callGeminiJson(genAI, retryPrompt);
@@ -307,37 +321,38 @@ SE IL JSON RISCHIA DI ESSERE TROPPO LUNGO:
 
     if (!out) {
       return res.status(500).json({
-        error: "Gemini returned non-JSON output (likely truncated).",
-        hint: "Aumenta maxOutputTokens o riduci paragrafi per sezione. Nel dubbio: usa retry e limiti più stretti.",
+        error: "Gemini returned non-JSON output (likely truncated or malformed).",
         debug: { rawFirst2000: stripCodeFences(text).slice(0, 2000) },
       });
     }
 
-    // clamps SEO
+    // clamps SEO + normalizzazioni
     out.title = out.title || data.name;
     out.slug = out.slug || slugify(out.title || data.name);
     out.seoTitle = clampLen(String(out.seoTitle || out.title).replace(/:/g, "–"), 70);
     out.metaDescription = clampLen(String(out.metaDescription || out.excerpt || ""), 160);
 
-    // safety arrays
     if (!Array.isArray(out.sections)) out.sections = [];
     if (!Array.isArray(out.faq)) out.faq = [];
-    if (!Array.isArray(out.ctas)) out.ctas = [];
+    if (!Array.isArray(out.ctas)) out.ctas = [
+      { label: "Scoprilo su FroGames", url: shopLink, placement: "hero" },
+      { label: "Vai allo shop FroGames", url: shopLink, placement: "closing" },
+    ];
 
     const contentHtml = renderHtml(out, shopLink);
 
-    // ✅ COMPATIBILITÀ: molte UI vecchie leggono "content" e non "contentHtml"
+    // ✅ compatibilità UI: molte vecchie UI leggono "content"
     return res.status(200).json({
       ...out,
-      content: contentHtml,   // <-- aggiunto: così la UI mostra subito
-      contentHtml,            // <-- manteniamo anche il nuovo campo
+      content: contentHtml,
+      contentHtml,
       debug: { model: "gemini-2.5-pro" },
     });
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint: "Controlla GEMINI_API_KEY e body {data, extras}.",
+      hint: "Controlla GEMINI_API_KEY e body {data, extras} + extras.rawResearchText.",
     });
   }
 }
