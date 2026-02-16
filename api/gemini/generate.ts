@@ -79,7 +79,6 @@ function htmlEscape(s: string) {
 }
 
 function buildBggHeaders() {
-  // ✅ usa il nome variabile che hai davvero su Vercel
   const token = (process.env.GG_XML_API_TOKEN || "").trim();
 
   const headers: Record<string, string> = {
@@ -383,23 +382,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
 
-    const body = (req.body ?? {}) as any;
+    // ✅ FIX: body può arrivare come string/Buffer su Vercel, parsalo
+    let body: any = req.body ?? {};
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch { body = {}; }
+    }
+    // @ts-ignore (buffer-like)
+    if (body && body.type === "Buffer" && Array.isArray(body.data)) {
+      try { body = JSON.parse(Buffer.from(body.data).toString("utf8")); } catch { body = {}; }
+    }
+
     const data = body.data ?? {};
     const extras = body.extras ?? {};
 
-    // ✅ accetta idOrUrl e rawResearchText anche "fuori" da extras (robustezza)
+    // 🔍 Debug (togli dopo che funziona)
+    console.log("GEN PAYLOAD CHECK", {
+      keys: Object.keys(body || {}),
+      hasData: !!body?.data,
+      hasExtras: !!body?.extras,
+      rawLenExtras: (extras?.rawResearchText || "").length,
+      rawLenRoot: (body?.rawResearchText || "").length,
+      idOrUrl: extras?.idOrUrl || body?.idOrUrl || data?.idOrUrl || body?.id || body?.url || null,
+    });
+
     const idOrUrl: string | undefined =
       extras.idOrUrl || body.idOrUrl || data.idOrUrl || body.id || body.url;
 
-    // Se per sbaglio gli mandi direttamente la risposta di /research come body:
-    // { ...researchOut } invece di { data, extras }
     const rawFromLooseResearch =
       body.rawResearchText && typeof body.rawResearchText === "string" ? body.rawResearchText : "";
 
-    // Se manca data.name, prova a ricavarlo dal link BGG
     if (!data?.name) {
       if (!idOrUrl) {
-        // se hai mandato direttamente il JSON di research, almeno name c'è
         if (body?.name) data.name = body.name;
         else return res.status(400).json({ error: "Missing data.name or extras.idOrUrl" });
       } else {
@@ -430,7 +443,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // ✅ rawResearchText: prova a prenderlo da più posti (robustezza)
     let rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
       (body.rawResearchText && String(body.rawResearchText)) ||
