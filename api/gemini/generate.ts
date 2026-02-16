@@ -31,7 +31,6 @@ function stripCodeFences(s: string) {
   return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
 }
 
-// Estrae il primo oggetto JSON bilanciando graffe
 function extractFirstJsonObject(text: string): string | null {
   const cleaned = stripCodeFences(text);
   const start = cleaned.indexOf("{");
@@ -77,6 +76,155 @@ function htmlEscape(s: string) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function buildBggHeaders() {
+  const token = (process.env.BGG_XML_API_TOKEN || "").trim();
+  const headers: Record<string, string> = {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+    accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+  return { headers, hasToken: !!token };
+}
+
+function stripHtml(html: string) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#10;/g, "\n")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function toArray<T>(x: T | T[] | undefined | null): T[] {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
+function isNonEmptyString(x: any) {
+  return typeof x === "string" && x.trim().length > 0;
+}
+
+function extractBggId(idOrUrl: string): string | null {
+  const s = String(idOrUrl || "").trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return s;
+
+  const m1 = s.match(/boardgame\/(\d+)/i);
+  if (m1?.[1]) return m1[1];
+
+  const m2 = s.match(/[?&]id=(\d+)/i);
+  if (m2?.[1]) return m2[1];
+
+  return null;
+}
+
+async function buildRawResearchFromBgg(idOrUrl: string) {
+  const bggId = extractBggId(idOrUrl);
+  if (!bggId) return null;
+
+  const url = `https://boardgamegeek.com/xmlapi2/thing?id=${encodeURIComponent(bggId)}&stats=1`;
+  const { headers, hasToken } = buildBggHeaders();
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 20_000);
+
+  try {
+    const r = await fetch(url, { headers, signal: ac.signal });
+    const xml = await r.text().catch(() => "");
+
+    if (!r.ok) {
+      return {
+        ok: false as const,
+        status: r.status,
+        hasToken,
+        bodyFirst300: xml.slice(0, 300),
+      };
+    }
+
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: "@_",
+      textNodeName: "#text",
+    });
+
+    const parsed = parser.parse(xml);
+    const item = parsed?.items?.item;
+    if (!item) return null;
+
+    const names = toArray(item.name);
+    const primaryName =
+      names.find((n: any) => n?.["@_type"] === "primary")?.["@_value"] ||
+      names[0]?.["@_value"] ||
+      "";
+
+    const description = stripHtml(item.description || "");
+    const yearPublished = String(item.yearpublished?.["@_value"] || "");
+    const minPlayers = Number(item.minplayers?.["@_value"] || 0) || 0;
+    const maxPlayers = Number(item.maxplayers?.["@_value"] || 0) || 0;
+    const playingTime = Number(item.playingtime?.["@_value"] || 0) || 0;
+
+    const links = toArray(item.link);
+
+    const designers = links
+      .filter((l: any) => l?.["@_type"] === "boardgamedesigner")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const artists = links
+      .filter((l: any) => l?.["@_type"] === "boardgameartist")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const publishers = links
+      .filter((l: any) => l?.["@_type"] === "boardgamepublisher")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const mechanics = links
+      .filter((l: any) => l?.["@_type"] === "boardgamemechanic")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const rawResearchText = [
+      `Titolo: ${primaryName}`,
+      yearPublished ? `Anno: ${yearPublished}` : "",
+      minPlayers && maxPlayers ? `Giocatori: ${minPlayers}-${maxPlayers}` : "",
+      playingTime ? `Durata: ${playingTime} min` : "",
+      publishers.length ? `Editore/i: ${publishers.join(", ")}` : "",
+      designers.length ? `Autore/i: ${designers.join(", ")}` : "",
+      artists.length ? `Artista/i: ${artists.join(", ")}` : "",
+      mechanics.length ? `Meccaniche: ${mechanics.join(", ")}` : "",
+      description ? `Descrizione: ${description}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n")
+      .slice(0, 20000);
+
+    return {
+      ok: true as const,
+      bggId,
+      primaryName,
+      yearPublished,
+      minPlayers,
+      maxPlayers,
+      playingTime,
+      designers,
+      artists,
+      publishers,
+      mechanics,
+      rawResearchText,
+    };
+  } finally {
+    clearTimeout(t);
+  }
 }
 
 // ----------------- HTML RENDERER -----------------
@@ -180,142 +328,11 @@ function renderHtml(draft: any, shopLink: string) {
   `.trim();
 }
 
-// ----------------- BGG RESEARCH (inline: così /generate funziona anche con solo link) -----------------
-
-function stripHtml(html: string) {
-  return String(html || "")
-    .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<\/p>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&quot;/g, '"')
-    .replace(/&#10;/g, "\n")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function toArray<T>(x: T | T[] | undefined | null): T[] {
-  if (!x) return [];
-  return Array.isArray(x) ? x : [x];
-}
-
-function isNonEmptyString(x: any) {
-  return typeof x === "string" && x.trim().length > 0;
-}
-
-function extractBggId(idOrUrl: string): string | null {
-  const s = String(idOrUrl || "").trim();
-  if (!s) return null;
-  if (/^\d+$/.test(s)) return s;
-  const m1 = s.match(/boardgame\/(\d+)/i);
-  if (m1?.[1]) return m1[1];
-  const m2 = s.match(/[?&]id=(\d+)/i);
-  if (m2?.[1]) return m2[1];
-  return null;
-}
-
-async function buildRawResearchFromBgg(idOrUrl: string) {
-  const bggId = extractBggId(idOrUrl);
-  if (!bggId) return null;
-
-  const url = `https://boardgamegeek.com/xmlapi2/thing?id=${encodeURIComponent(bggId)}&stats=1`;
-
-  const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 15_000);
-
-  try {
-    const r = await fetch(url, {
-      headers: { "user-agent": "frogames-bot/1.0 (+https://frogames.it)" },
-      signal: ac.signal,
-    });
-    if (!r.ok) return null;
-
-    const xml = await r.text();
-
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "@_",
-      textNodeName: "#text",
-    });
-
-    const parsed = parser.parse(xml);
-    const item = parsed?.items?.item;
-    if (!item) return null;
-
-    const names = toArray(item.name);
-    const primaryName =
-      names.find((n: any) => n?.["@_type"] === "primary")?.["@_value"] ||
-      names[0]?.["@_value"] ||
-      "";
-
-    const description = stripHtml(item.description || "");
-    const yearPublished = String(item.yearpublished?.["@_value"] || "");
-    const minPlayers = Number(item.minplayers?.["@_value"] || 0) || 0;
-    const maxPlayers = Number(item.maxplayers?.["@_value"] || 0) || 0;
-    const playingTime = Number(item.playingtime?.["@_value"] || 0) || 0;
-
-    const links = toArray(item.link);
-
-    const designers = links
-      .filter((l: any) => l?.["@_type"] === "boardgamedesigner")
-      .map((l: any) => l?.["@_value"])
-      .filter(isNonEmptyString);
-
-    const artists = links
-      .filter((l: any) => l?.["@_type"] === "boardgameartist")
-      .map((l: any) => l?.["@_value"])
-      .filter(isNonEmptyString);
-
-    const publishers = links
-      .filter((l: any) => l?.["@_type"] === "boardgamepublisher")
-      .map((l: any) => l?.["@_value"])
-      .filter(isNonEmptyString);
-
-    const mechanics = links
-      .filter((l: any) => l?.["@_type"] === "boardgamemechanic")
-      .map((l: any) => l?.["@_value"])
-      .filter(isNonEmptyString);
-
-    const rawResearchText = [
-      `Titolo: ${primaryName}`,
-      yearPublished ? `Anno: ${yearPublished}` : "",
-      minPlayers && maxPlayers ? `Giocatori: ${minPlayers}-${maxPlayers}` : "",
-      playingTime ? `Durata: ${playingTime} min` : "",
-      publishers.length ? `Editore/i: ${publishers.join(", ")}` : "",
-      designers.length ? `Autore/i: ${designers.join(", ")}` : "",
-      artists.length ? `Artista/i: ${artists.join(", ")}` : "",
-      mechanics.length ? `Meccaniche: ${mechanics.join(", ")}` : "",
-      description ? `Descrizione: ${description}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    return {
-      bggId,
-      primaryName,
-      yearPublished,
-      minPlayers,
-      maxPlayers,
-      playingTime,
-      designers,
-      artists,
-      publishers,
-      mechanics,
-      rawResearchText: rawResearchText.slice(0, 20000),
-    };
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-// ----------------- GEMINI CALL (fallback models + timeout) -----------------
+// ----------------- GEMINI CALL (fallback models) -----------------
 
 async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
-  // Metti qui i modelli che hai abilitato. Il primo che funziona vince.
   const candidates = [
-    process.env.GEMINI_MODEL, // opzionale
+    process.env.GEMINI_MODEL,
     "gemini-2.0-pro",
     "gemini-1.5-pro",
     "gemini-1.5-pro-latest",
@@ -331,7 +348,6 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
           temperature: 0.2,
           topP: 0.9,
           maxOutputTokens: 5000,
-          // ⚠️ responseMimeType spesso rompe su alcune versioni/route → meglio toglierlo
         },
       });
 
@@ -341,7 +357,7 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
       try {
         const result = await model.generateContent({
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          // @ts-ignore: alcune versioni supportano signal
+          // @ts-ignore
           signal: ac.signal,
         });
         return { text: result.response.text(), model: modelName };
@@ -372,27 +388,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const data = body.data ?? {};
     const extras = body.extras ?? {};
 
-    // ✅ supporto "solo link BGG" direttamente su /generate
     const idOrUrl: string | undefined = extras.idOrUrl || body.idOrUrl || data.idOrUrl;
 
-    // Se non hai data.name, prova a ricavarlo dal BGG link
+    // Se manca data.name, prova a ricavarlo dal link BGG
     if (!data?.name) {
       if (!idOrUrl) return res.status(400).json({ error: "Missing data.name or idOrUrl" });
 
       const bgg = await buildRawResearchFromBgg(idOrUrl);
-      if (!bgg?.primaryName) {
-        return res.status(400).json({ error: "Unable to resolve game from idOrUrl" });
+      if (!bgg || !bgg.ok) {
+        const hint401 =
+          bgg?.status === 401
+            ? "Token BGG mancante o non valido. Verifica env BGG_XML_API_TOKEN su Vercel e fai Redeploy."
+            : "Non riesco a leggere i dati da BGG (rate limit o errore).";
+        return res.status(502).json({
+          error: "BGG fetch failed",
+          status: bgg?.status || 0,
+          hint: hint401,
+          debug: { hasToken: bgg?.hasToken, bodyFirst300: bgg?.bodyFirst300 },
+        });
       }
 
       data.name = bgg.primaryName;
-      data.minPlayers = bgg.minPlayers || data.minPlayers || 0;
-      data.maxPlayers = bgg.maxPlayers || data.maxPlayers || 0;
-      data.playingTime = bgg.playingTime || data.playingTime || 0;
-      data.designers = bgg.designers || data.designers || [];
-      data.artists = bgg.artists || data.artists || [];
-      data.publishers = bgg.publishers || data.publishers || [];
-      data.mechanics = bgg.mechanics || data.mechanics || [];
-      extras.rawResearchText = bgg.rawResearchText; // ✅ fondamentale
+      data.minPlayers = bgg.minPlayers || 0;
+      data.maxPlayers = bgg.maxPlayers || 0;
+      data.playingTime = bgg.playingTime || 0;
+      data.designers = bgg.designers || [];
+      data.artists = bgg.artists || [];
+      data.publishers = bgg.publishers || [];
+      data.mechanics = bgg.mechanics || [];
+
+      extras.rawResearchText = bgg.rawResearchText;
     }
 
     // ✅ RESEARCH: se manca, proviamo a costruirlo dal link
@@ -403,8 +428,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (!rawResearchText.trim() && idOrUrl) {
       const bgg = await buildRawResearchFromBgg(idOrUrl);
-      rawResearchText = bgg?.rawResearchText || "";
-      if (rawResearchText) extras.rawResearchText = rawResearchText;
+      if (bgg && bgg.ok) rawResearchText = bgg.rawResearchText;
     }
 
     if (!rawResearchText.trim()) {
@@ -492,11 +516,9 @@ LIMITI:
       return parsed.ok ? parsed.value : null;
     };
 
-    // 1) try
     let result = await callGeminiJson(genAI, basePrompt);
     let out = tryParse(result.text);
 
-    // 2) retry più corto se parse fallisce
     if (!out) {
       const retryPrompt = basePrompt + `
 
@@ -520,7 +542,6 @@ SE STAI SBORDANDO:
       });
     }
 
-    // clamps SEO + normalizzazioni
     out.title = out.title || data.name;
     out.slug = out.slug || slugify(out.title || data.name);
     out.seoTitle = clampLen(String(out.seoTitle || out.title).replace(/:/g, "–"), 70);
@@ -547,7 +568,7 @@ SE STAI SBORDANDO:
     return res.status(500).json({
       error: e?.message ?? "Server error",
       hint:
-        "Controlla GEMINI_API_KEY. Ora /generate accetta anche extras.idOrUrl (link BGG) e ricava il research da solo.",
+        "Controlla GEMINI_API_KEY e BGG_XML_API_TOKEN su Vercel (Production) + Redeploy.",
     });
   }
 }
