@@ -50,28 +50,42 @@ function clamp(s: string, max: number) {
   return str.length <= max ? str : str.slice(0, max - 1).trimEnd() + "…";
 }
 
+function buildBggHeaders() {
+  const token = (process.env.BGG_XML_API_TOKEN || "").trim();
+
+  const headers: Record<string, string> = {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+    accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
+  };
+
+  if (token) headers.authorization = `Bearer ${token}`;
+  return { headers, hasToken: !!token };
+}
+
 async function fetchBggThingXml(bggId: string) {
+  // ✅ host senza www
   const url = `https://boardgamegeek.com/xmlapi2/thing?id=${encodeURIComponent(bggId)}&stats=1`;
 
+  const { headers, hasToken } = buildBggHeaders();
+
   const ac = new AbortController();
-  const t = setTimeout(() => ac.abort(), 15_000);
+  const t = setTimeout(() => ac.abort(), 20_000);
 
   try {
-    const r = await fetch(url, {
-      headers: { "user-agent": "frogames-bot/1.0 (+https://frogames.it)" },
-      signal: ac.signal,
-    });
+    const r = await fetch(url, { headers, signal: ac.signal });
+    const text = await r.text().catch(() => "");
 
     if (!r.ok) {
       return {
         ok: false as const,
         status: r.status,
-        text: await r.text().catch(() => ""),
+        bodyFirst300: text.slice(0, 300),
+        hasToken,
       };
     }
 
-    const xml = await r.text();
-    return { ok: true as const, xml };
+    return { ok: true as const, xml: text, hasToken };
   } finally {
     clearTimeout(t);
   }
@@ -93,11 +107,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const fetched = await fetchBggThingXml(bggId);
+
     if (!fetched.ok) {
+      const hint401 =
+        fetched.status === 401
+          ? "Token BGG mancante o non valido. Verifica env BGG_XML_API_TOKEN su Vercel e fai Redeploy."
+          : "BGG può rate-limitare o essere lento. Riprova tra poco.";
+
       return res.status(502).json({
         error: "BGG fetch failed",
         status: fetched.status,
-        hint: "BGG può rate-limitare o essere lento. Riprova tra poco.",
+        hint: hint401,
+        debug: {
+          hasToken: fetched.hasToken,
+          bodyFirst300: fetched.bodyFirst300,
+        },
       });
     }
 
@@ -146,7 +170,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .map((l: any) => l?.["@_value"])
       .filter(isNonEmptyString);
 
-    const averageRating = String(item?.statistics?.ratings?.average?.["@_value"] || "") || "0";
+    const averageRating =
+      String(item?.statistics?.ratings?.average?.["@_value"] || "") || "0";
 
     const rawResearchText = [
       `Titolo: ${primaryName}`,
