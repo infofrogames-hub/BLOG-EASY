@@ -369,7 +369,9 @@ async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
     }
   }
 
-  throw new Error(`Gemini call failed on all models. Last error: ${lastErr?.message || String(lastErr)}`);
+  throw new Error(
+    `Gemini call failed on all models. Last error: ${lastErr?.message || String(lastErr)}`
+  );
 }
 
 // ----------------- HANDLER -----------------
@@ -385,39 +387,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const data = body.data ?? {};
     const extras = body.extras ?? {};
 
-    const idOrUrl: string | undefined = extras.idOrUrl || body.idOrUrl || data.idOrUrl;
+    // ✅ accetta idOrUrl e rawResearchText anche "fuori" da extras (robustezza)
+    const idOrUrl: string | undefined =
+      extras.idOrUrl || body.idOrUrl || data.idOrUrl || body.id || body.url;
 
+    // Se per sbaglio gli mandi direttamente la risposta di /research come body:
+    // { ...researchOut } invece di { data, extras }
+    const rawFromLooseResearch =
+      body.rawResearchText && typeof body.rawResearchText === "string" ? body.rawResearchText : "";
+
+    // Se manca data.name, prova a ricavarlo dal link BGG
     if (!data?.name) {
-      if (!idOrUrl) return res.status(400).json({ error: "Missing data.name or idOrUrl" });
+      if (!idOrUrl) {
+        // se hai mandato direttamente il JSON di research, almeno name c'è
+        if (body?.name) data.name = body.name;
+        else return res.status(400).json({ error: "Missing data.name or extras.idOrUrl" });
+      } else {
+        const bgg = await buildRawResearchFromBgg(idOrUrl);
+        if (!bgg || !bgg.ok) {
+          const hint401 =
+            bgg?.status === 401
+              ? "Token BGG mancante o non valido (GG_XML_API_TOKEN). Verifica env su Vercel e fai Redeploy."
+              : "Non riesco a leggere i dati da BGG (rate limit o errore).";
+          return res.status(502).json({
+            error: "BGG fetch failed",
+            status: bgg?.status || 0,
+            hint: hint401,
+            debug: { hasToken: bgg?.hasToken, bodyFirst300: bgg?.bodyFirst300 },
+          });
+        }
 
-      const bgg = await buildRawResearchFromBgg(idOrUrl);
-      if (!bgg || !bgg.ok) {
-        const hint401 =
-          bgg?.status === 401
-            ? "Token BGG mancante o non valido (GG_XML_API_TOKEN). Verifica env su Vercel e fai Redeploy."
-            : "Non riesco a leggere i dati da BGG (rate limit o errore).";
-        return res.status(502).json({
-          error: "BGG fetch failed",
-          status: bgg?.status || 0,
-          hint: hint401,
-          debug: { hasToken: bgg?.hasToken, bodyFirst300: bgg?.bodyFirst300 },
-        });
+        data.name = bgg.primaryName;
+        data.minPlayers = bgg.minPlayers || 0;
+        data.maxPlayers = bgg.maxPlayers || 0;
+        data.playingTime = bgg.playingTime || 0;
+        data.designers = bgg.designers || [];
+        data.artists = bgg.artists || [];
+        data.publishers = bgg.publishers || [];
+        data.mechanics = bgg.mechanics || [];
+
+        extras.rawResearchText = bgg.rawResearchText;
       }
-
-      data.name = bgg.primaryName;
-      data.minPlayers = bgg.minPlayers || 0;
-      data.maxPlayers = bgg.maxPlayers || 0;
-      data.playingTime = bgg.playingTime || 0;
-      data.designers = bgg.designers || [];
-      data.artists = bgg.artists || [];
-      data.publishers = bgg.publishers || [];
-      data.mechanics = bgg.mechanics || [];
-
-      extras.rawResearchText = bgg.rawResearchText;
     }
 
+    // ✅ rawResearchText: prova a prenderlo da più posti (robustezza)
     let rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
+      (body.rawResearchText && String(body.rawResearchText)) ||
+      rawFromLooseResearch ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
       "";
 
@@ -429,11 +446,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!rawResearchText.trim()) {
       return res.status(400).json({
         error: "Missing research",
-        hint: "Passa extras.rawResearchText oppure passa extras.idOrUrl (link BGG) e lo ricavo io.",
+        hint:
+          "Passa extras.rawResearchText (dalla risposta di /research) oppure passa extras.idOrUrl (link BGG) e lo ricavo io.",
       });
     }
 
-    const shopLink = extras.shopLink || "https://www.frogames.it/";
+    const shopLink = extras.shopLink || body.shopLink || "https://www.frogames.it/";
     const publisher = extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
 
     const designers =
