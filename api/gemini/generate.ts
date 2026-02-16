@@ -2,6 +2,9 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import { XMLParser } from "fast-xml-parser";
+
+export const config = { runtime: "nodejs" };
 
 // ----------------- CONFIG -----------------
 
@@ -22,7 +25,7 @@ IMPORTANTISSIMO:
 - NON aggiungere testo fuori dal JSON.
 `.trim();
 
-// ----------------- HELPERS (JSON safe) -----------------
+// ----------------- HELPERS -----------------
 
 function stripCodeFences(s: string) {
   return String(s || "").replace(/```json/gi, "").replace(/```/g, "").trim();
@@ -76,7 +79,7 @@ function htmlEscape(s: string) {
     .replace(/>/g, "&gt;");
 }
 
-// ----------------- HTML RENDERER (structure locked) -----------------
+// ----------------- HTML RENDERER -----------------
 
 function renderHtml(draft: any, shopLink: string) {
   const title = draft?.title || "";
@@ -86,10 +89,7 @@ function renderHtml(draft: any, shopLink: string) {
 
   const toc = sections
     .filter((s: any) => s?.id && s?.h2)
-    .map(
-      (s: any) =>
-        `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`
-    )
+    .map((s: any) => `<a class="fg-toc__a" href="#${htmlEscape(s.id)}">${htmlEscape(s.h2)}</a>`)
     .join("");
 
   const heroCtaUrl =
@@ -180,22 +180,186 @@ function renderHtml(draft: any, shopLink: string) {
   `.trim();
 }
 
-// ----------------- GEMINI CALL (with retry) -----------------
+// ----------------- BGG RESEARCH (inline: così /generate funziona anche con solo link) -----------------
+
+function stripHtml(html: string) {
+  return String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&quot;/g, '"')
+    .replace(/&#10;/g, "\n")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function toArray<T>(x: T | T[] | undefined | null): T[] {
+  if (!x) return [];
+  return Array.isArray(x) ? x : [x];
+}
+
+function isNonEmptyString(x: any) {
+  return typeof x === "string" && x.trim().length > 0;
+}
+
+function extractBggId(idOrUrl: string): string | null {
+  const s = String(idOrUrl || "").trim();
+  if (!s) return null;
+  if (/^\d+$/.test(s)) return s;
+  const m1 = s.match(/boardgame\/(\d+)/i);
+  if (m1?.[1]) return m1[1];
+  const m2 = s.match(/[?&]id=(\d+)/i);
+  if (m2?.[1]) return m2[1];
+  return null;
+}
+
+async function buildRawResearchFromBgg(idOrUrl: string) {
+  const bggId = extractBggId(idOrUrl);
+  if (!bggId) return null;
+
+  const url = `https://boardgamegeek.com/xmlapi2/thing?id=${encodeURIComponent(bggId)}&stats=1`;
+
+  const ac = new AbortController();
+  const t = setTimeout(() => ac.abort(), 15_000);
+
+  try {
+    const r = await fetch(url, {
+      headers: { "user-agent": "frogames-bot/1.0 (+https://frogames.it)" },
+      signal: ac.signal,
+    });
+    if (!r.ok) return null;
+
+    const xml = await r.text();
+
+    const parser = new XMLParser({
+      ignoreAttributes: false,
+      attributeNamePrefix: "@_",
+      textNodeName: "#text",
+    });
+
+    const parsed = parser.parse(xml);
+    const item = parsed?.items?.item;
+    if (!item) return null;
+
+    const names = toArray(item.name);
+    const primaryName =
+      names.find((n: any) => n?.["@_type"] === "primary")?.["@_value"] ||
+      names[0]?.["@_value"] ||
+      "";
+
+    const description = stripHtml(item.description || "");
+    const yearPublished = String(item.yearpublished?.["@_value"] || "");
+    const minPlayers = Number(item.minplayers?.["@_value"] || 0) || 0;
+    const maxPlayers = Number(item.maxplayers?.["@_value"] || 0) || 0;
+    const playingTime = Number(item.playingtime?.["@_value"] || 0) || 0;
+
+    const links = toArray(item.link);
+
+    const designers = links
+      .filter((l: any) => l?.["@_type"] === "boardgamedesigner")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const artists = links
+      .filter((l: any) => l?.["@_type"] === "boardgameartist")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const publishers = links
+      .filter((l: any) => l?.["@_type"] === "boardgamepublisher")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const mechanics = links
+      .filter((l: any) => l?.["@_type"] === "boardgamemechanic")
+      .map((l: any) => l?.["@_value"])
+      .filter(isNonEmptyString);
+
+    const rawResearchText = [
+      `Titolo: ${primaryName}`,
+      yearPublished ? `Anno: ${yearPublished}` : "",
+      minPlayers && maxPlayers ? `Giocatori: ${minPlayers}-${maxPlayers}` : "",
+      playingTime ? `Durata: ${playingTime} min` : "",
+      publishers.length ? `Editore/i: ${publishers.join(", ")}` : "",
+      designers.length ? `Autore/i: ${designers.join(", ")}` : "",
+      artists.length ? `Artista/i: ${artists.join(", ")}` : "",
+      mechanics.length ? `Meccaniche: ${mechanics.join(", ")}` : "",
+      description ? `Descrizione: ${description}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return {
+      bggId,
+      primaryName,
+      yearPublished,
+      minPlayers,
+      maxPlayers,
+      playingTime,
+      designers,
+      artists,
+      publishers,
+      mechanics,
+      rawResearchText: rawResearchText.slice(0, 20000),
+    };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// ----------------- GEMINI CALL (fallback models + timeout) -----------------
 
 async function callGeminiJson(genAI: GoogleGenerativeAI, prompt: string) {
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.5-pro",
-    generationConfig: {
-      temperature: 0.2,
-      topP: 0.9,
-      maxOutputTokens: 6000,
-      responseMimeType: "application/json",
-    },
-  });
+  // Metti qui i modelli che hai abilitato. Il primo che funziona vince.
+  const candidates = [
+    process.env.GEMINI_MODEL, // opzionale
+    "gemini-2.0-pro",
+    "gemini-1.5-pro",
+    "gemini-1.5-pro-latest",
+  ].filter(Boolean) as string[];
 
-  const result = await model.generateContent(prompt);
-  return result.response.text();
+  let lastErr: any = null;
+
+  for (const modelName of candidates) {
+    try {
+      const model = genAI.getGenerativeModel({
+        model: modelName,
+        generationConfig: {
+          temperature: 0.2,
+          topP: 0.9,
+          maxOutputTokens: 5000,
+          // ⚠️ responseMimeType spesso rompe su alcune versioni/route → meglio toglierlo
+        },
+      });
+
+      const ac = new AbortController();
+      const t = setTimeout(() => ac.abort(), 25_000);
+
+      try {
+        const result = await model.generateContent({
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          // @ts-ignore: alcune versioni supportano signal
+          signal: ac.signal,
+        });
+        return { text: result.response.text(), model: modelName };
+      } finally {
+        clearTimeout(t);
+      }
+    } catch (e: any) {
+      lastErr = e;
+      continue;
+    }
+  }
+
+  throw new Error(
+    `Gemini call failed on all models. Last error: ${lastErr?.message || String(lastErr)}`
+  );
 }
+
+// ----------------- HANDLER -----------------
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
@@ -204,39 +368,67 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
 
-    const { data, extras } = (req.body ?? {}) as any;
-    if (!data || !extras) return res.status(400).json({ error: "Missing data/extras" });
-    if (!data?.name) return res.status(400).json({ error: "Missing data.name" });
+    const body = (req.body ?? {}) as any;
+    const data = body.data ?? {};
+    const extras = body.extras ?? {};
 
-    // ✅ RESEARCH OBBLIGATORIO (è la tua “verità”)
-    const rawResearchText =
+    // ✅ supporto "solo link BGG" direttamente su /generate
+    const idOrUrl: string | undefined = extras.idOrUrl || body.idOrUrl || data.idOrUrl;
+
+    // Se non hai data.name, prova a ricavarlo dal BGG link
+    if (!data?.name) {
+      if (!idOrUrl) return res.status(400).json({ error: "Missing data.name or idOrUrl" });
+
+      const bgg = await buildRawResearchFromBgg(idOrUrl);
+      if (!bgg?.primaryName) {
+        return res.status(400).json({ error: "Unable to resolve game from idOrUrl" });
+      }
+
+      data.name = bgg.primaryName;
+      data.minPlayers = bgg.minPlayers || data.minPlayers || 0;
+      data.maxPlayers = bgg.maxPlayers || data.maxPlayers || 0;
+      data.playingTime = bgg.playingTime || data.playingTime || 0;
+      data.designers = bgg.designers || data.designers || [];
+      data.artists = bgg.artists || data.artists || [];
+      data.publishers = bgg.publishers || data.publishers || [];
+      data.mechanics = bgg.mechanics || data.mechanics || [];
+      extras.rawResearchText = bgg.rawResearchText; // ✅ fondamentale
+    }
+
+    // ✅ RESEARCH: se manca, proviamo a costruirlo dal link
+    let rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
       "";
 
+    if (!rawResearchText.trim() && idOrUrl) {
+      const bgg = await buildRawResearchFromBgg(idOrUrl);
+      rawResearchText = bgg?.rawResearchText || "";
+      if (rawResearchText) extras.rawResearchText = rawResearchText;
+    }
+
     if (!rawResearchText.trim()) {
       return res.status(400).json({
-        error: "Missing extras.rawResearchText",
-        hint: "Chiama prima /api/gemini/research e passa extras.rawResearchText = response.rawResearchText",
+        error: "Missing research",
+        hint: "Passa extras.rawResearchText oppure passa extras.idOrUrl (link BGG) e lo ricavo io.",
       });
     }
 
     const shopLink = extras.shopLink || "https://www.frogames.it/";
-    const publisher =
-      extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
+    const publisher = extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
 
     const designers =
       extras.designers?.length > 0
         ? extras.designers.map((d: any) => d.name).join(", ")
         : data.designers
-          ? data.designers.join(", ")
+          ? (Array.isArray(data.designers) ? data.designers.join(", ") : String(data.designers))
           : "";
 
     const artists =
       extras.artists?.length > 0
         ? extras.artists.map((a: any) => a.name).join(", ")
         : data.artists
-          ? data.artists.join(", ")
+          ? (Array.isArray(data.artists) ? data.artists.join(", ") : String(data.artists))
           : "";
 
     const basePrompt = `
@@ -248,9 +440,9 @@ DATI TECNICI (contesto: NON inventare oltre a questo + RESEARCH):
 - Editore: ${publisher}
 - Autori: ${designers}
 - Artisti: ${artists}
-- Giocatori: ${data.minPlayers}-${data.maxPlayers}
-- Durata: ${data.playingTime} min
-- Meccaniche: ${data.mechanics ? data.mechanics.join(", ") : ""}
+- Giocatori: ${data.minPlayers || 0}-${data.maxPlayers || 0}
+- Durata: ${data.playingTime || 0} min
+- Meccaniche: ${Array.isArray(data.mechanics) ? data.mechanics.join(", ") : ""}
 
 RESEARCH (questa è la tua unica verità; non aggiungere dettagli fuori da qui):
 """${rawResearchText}"""
@@ -289,9 +481,6 @@ LIMITI:
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
-    // 1) try
-    let text = await callGeminiJson(genAI, basePrompt);
-
     const tryParse = (t: string) => {
       const direct = safeParseJson(stripCodeFences(t));
       if (direct.ok) return direct.value;
@@ -303,9 +492,11 @@ LIMITI:
       return parsed.ok ? parsed.value : null;
     };
 
-    let out = tryParse(text);
+    // 1) try
+    let result = await callGeminiJson(genAI, basePrompt);
+    let out = tryParse(result.text);
 
-    // 2) retry (più “corto”) se non parse
+    // 2) retry più corto se parse fallisce
     if (!out) {
       const retryPrompt = basePrompt + `
 
@@ -315,14 +506,17 @@ SE STAI SBORDANDO:
 - faq massimo 3
 - output SOLO JSON
 `;
-      text = await callGeminiJson(genAI, retryPrompt);
-      out = tryParse(text);
+      result = await callGeminiJson(genAI, retryPrompt);
+      out = tryParse(result.text);
     }
 
     if (!out) {
       return res.status(500).json({
         error: "Gemini returned non-JSON output (likely truncated or malformed).",
-        debug: { rawFirst2000: stripCodeFences(text).slice(0, 2000) },
+        debug: {
+          modelTried: result.model,
+          rawFirst2000: stripCodeFences(result.text).slice(0, 2000),
+        },
       });
     }
 
@@ -334,25 +528,26 @@ SE STAI SBORDANDO:
 
     if (!Array.isArray(out.sections)) out.sections = [];
     if (!Array.isArray(out.faq)) out.faq = [];
-    if (!Array.isArray(out.ctas)) out.ctas = [
-      { label: "Scoprilo su FroGames", url: shopLink, placement: "hero" },
-      { label: "Vai allo shop FroGames", url: shopLink, placement: "closing" },
-    ];
+    if (!Array.isArray(out.ctas))
+      out.ctas = [
+        { label: "Scoprilo su FroGames", url: shopLink, placement: "hero" },
+        { label: "Vai allo shop FroGames", url: shopLink, placement: "closing" },
+      ];
 
     const contentHtml = renderHtml(out, shopLink);
 
-    // ✅ compatibilità UI: molte vecchie UI leggono "content"
     return res.status(200).json({
       ...out,
       content: contentHtml,
       contentHtml,
-      debug: { model: "gemini-2.5-pro" },
+      debug: { model: result.model },
     });
   } catch (e: any) {
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint: "Controlla GEMINI_API_KEY e body {data, extras} + extras.rawResearchText.",
+      hint:
+        "Controlla GEMINI_API_KEY. Ora /generate accetta anche extras.idOrUrl (link BGG) e ricava il research da solo.",
     });
   }
 }
