@@ -78,19 +78,6 @@ function htmlEscape(s: string) {
     .replace(/>/g, "&gt;");
 }
 
-function buildBggHeaders() {
-  const token = (process.env.GG_XML_API_TOKEN || "").trim();
-
-  const headers: Record<string, string> = {
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
-    accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
-  };
-
-  if (token) headers.authorization = `Bearer ${token}`;
-  return { headers, hasToken: !!token };
-}
-
 function stripHtml(html: string) {
   return String(html || "")
     .replace(/<br\s*\/?>/gi, "\n")
@@ -127,6 +114,71 @@ function extractBggId(idOrUrl: string): string | null {
 
   return null;
 }
+
+// ✅ Accetta sia GG_XML_API_TOKEN che BGG_XML_API_TOKEN (per non impazzire)
+function buildBggHeaders() {
+  const token =
+    (process.env.GG_XML_API_TOKEN || "").trim() ||
+    (process.env.BGG_XML_API_TOKEN || "").trim();
+
+  const headers: Record<string, string> = {
+    "user-agent": "frogames-bgg/1.0 (+https://frogames.it)",
+    accept: "application/xml,text/xml;q=0.9,*/*;q=0.8",
+  };
+
+  // Nota: BGG XML API storicamente non richiedeva token; se ora lo richiede,
+  // almeno qui lo inviamo in modo “compatibile”.
+  if (token) {
+    headers.authorization = `Bearer ${token}`;
+    headers["x-api-key"] = token; // fallback (non fa male)
+  }
+
+  return { headers, hasToken: !!token };
+}
+
+// ----------------- PAYLOAD NORMALIZER (FIX Missing research) -----------------
+
+function normalizeGeneratePayload(body: any) {
+  // Supporta questi payload:
+  // A) { data: {...}, extras: {...} }
+  // B) { ...researchOut } (risposta diretta di /research)
+  // C) { idOrUrl: "..." }
+  // D) { rawResearchText: "..." }
+
+  const data = (body?.data && typeof body.data === "object") ? body.data : {};
+  const extras = (body?.extras && typeof body.extras === "object") ? body.extras : {};
+
+  // Se mi incolli direttamente la risposta di /research:
+  if (!extras.rawResearchText && typeof body?.rawResearchText === "string") {
+    extras.rawResearchText = body.rawResearchText;
+  }
+  if (!data.name && typeof body?.name === "string") data.name = body.name;
+
+  // Campi tipici /research in root
+  const mapFields = ["minPlayers","maxPlayers","playingTime","designers","artists","publishers","mechanics"];
+  for (const k of mapFields) {
+    if (data[k] == null && body?.[k] != null) data[k] = body[k];
+  }
+
+  // idOrUrl può essere ovunque
+  const idOrUrl =
+    extras.idOrUrl ||
+    body?.idOrUrl ||
+    body?.url ||
+    body?.id ||
+    data?.idOrUrl ||
+    body?.data?.idOrUrl ||
+    body?.extras?.idOrUrl;
+
+  if (idOrUrl && !extras.idOrUrl) extras.idOrUrl = idOrUrl;
+
+  // shopLink loose
+  if (!extras.shopLink && typeof body?.shopLink === "string") extras.shopLink = body.shopLink;
+
+  return { data, extras };
+}
+
+// ----------------- BGG -> rawResearchText -----------------
 
 async function buildRawResearchFromBgg(idOrUrl: string) {
   const bggId = extractBggId(idOrUrl);
@@ -214,7 +266,6 @@ async function buildRawResearchFromBgg(idOrUrl: string) {
       ok: true as const,
       bggId,
       primaryName,
-      yearPublished,
       minPlayers,
       maxPlayers,
       playingTime,
@@ -382,103 +433,82 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing GEMINI_API_KEY" });
 
-    // ✅ FIX: body può arrivare come string/Buffer su Vercel, parsalo
+    // ✅ body parse robusto
     let body: any = req.body ?? {};
     if (typeof body === "string") {
       try { body = JSON.parse(body); } catch { body = {}; }
     }
-    // @ts-ignore (buffer-like)
+    // @ts-ignore
     if (body && body.type === "Buffer" && Array.isArray(body.data)) {
       try { body = JSON.parse(Buffer.from(body.data).toString("utf8")); } catch { body = {}; }
     }
 
-    const data = body.data ?? {};
-    const extras = body.extras ?? {};
+    // ✅ NORMALIZZA payload (questa è la cura del “Missing research”)
+    const normalized = normalizeGeneratePayload(body);
+    const data = normalized.data;
+    const extras = normalized.extras;
 
-    // 🔍 Debug (togli dopo che funziona)
-    console.log("GEN PAYLOAD CHECK", {
-      keys: Object.keys(body || {}),
-      hasData: !!body?.data,
-      hasExtras: !!body?.extras,
-      rawLenExtras: (extras?.rawResearchText || "").length,
-      rawLenRoot: (body?.rawResearchText || "").length,
-      idOrUrl: extras?.idOrUrl || body?.idOrUrl || data?.idOrUrl || body?.id || body?.url || null,
+    const idOrUrl: string | undefined = extras.idOrUrl;
+
+    // Debug utile (quando fallisce vedi subito cosa è arrivato)
+    console.log("GEN_PAYLOAD", {
+      rootKeys: Object.keys(body || {}),
+      hasDataName: !!data?.name,
+      hasIdOrUrl: !!idOrUrl,
+      rawLen: String(extras?.rawResearchText || "").length,
     });
 
-    const idOrUrl: string | undefined =
-      extras.idOrUrl || body.idOrUrl || data.idOrUrl || body.id || body.url;
-
-    const rawFromLooseResearch =
-      body.rawResearchText && typeof body.rawResearchText === "string" ? body.rawResearchText : "";
-
-    if (!data?.name) {
-      if (!idOrUrl) {
-        if (body?.name) data.name = body.name;
-        else return res.status(400).json({ error: "Missing data.name or extras.idOrUrl" });
-      } else {
-        const bgg = await buildRawResearchFromBgg(idOrUrl);
-        if (!bgg || !bgg.ok) {
-          const hint401 =
-            bgg?.status === 401
-              ? "Token BGG mancante o non valido (GG_XML_API_TOKEN). Verifica env su Vercel e fai Redeploy."
-              : "Non riesco a leggere i dati da BGG (rate limit o errore).";
-          return res.status(502).json({
-            error: "BGG fetch failed",
-            status: bgg?.status || 0,
-            hint: hint401,
-            debug: { hasToken: bgg?.hasToken, bodyFirst300: bgg?.bodyFirst300 },
-          });
-        }
-
-        data.name = bgg.primaryName;
-        data.minPlayers = bgg.minPlayers || 0;
-        data.maxPlayers = bgg.maxPlayers || 0;
-        data.playingTime = bgg.playingTime || 0;
-        data.designers = bgg.designers || [];
-        data.artists = bgg.artists || [];
-        data.publishers = bgg.publishers || [];
-        data.mechanics = bgg.mechanics || [];
-
-        extras.rawResearchText = bgg.rawResearchText;
-      }
-    }
-
+    // ✅ rawResearchText: o arriva, o lo ricaviamo dal link
     let rawResearchText =
       (extras.rawResearchText && String(extras.rawResearchText)) ||
-      (body.rawResearchText && String(body.rawResearchText)) ||
-      rawFromLooseResearch ||
       (extras.enrichmentNotes && String(extras.enrichmentNotes)) ||
       "";
 
     if (!rawResearchText.trim() && idOrUrl) {
       const bgg = await buildRawResearchFromBgg(idOrUrl);
-      if (bgg && bgg.ok) rawResearchText = bgg.rawResearchText;
+      if (!bgg || !bgg.ok) {
+        const hint401 =
+          bgg?.status === 401
+            ? "Token BGG mancante/non valido. Controlla GG_XML_API_TOKEN o BGG_XML_API_TOKEN su Vercel (Production) + Redeploy."
+            : "Non riesco a leggere BGG (rate limit o errore).";
+        return res.status(502).json({
+          error: "BGG fetch failed",
+          status: bgg?.status || 0,
+          hint: hint401,
+          debug: { hasToken: bgg?.hasToken, bodyFirst300: bgg?.bodyFirst300 },
+        });
+      }
+
+      rawResearchText = bgg.rawResearchText;
+
+      // riempi data se mancava
+      if (!data.name) data.name = bgg.primaryName;
+      if (!data.minPlayers) data.minPlayers = bgg.minPlayers || 0;
+      if (!data.maxPlayers) data.maxPlayers = bgg.maxPlayers || 0;
+      if (!data.playingTime) data.playingTime = bgg.playingTime || 0;
+      if (!data.designers) data.designers = bgg.designers || [];
+      if (!data.artists) data.artists = bgg.artists || [];
+      if (!data.publishers) data.publishers = bgg.publishers || [];
+      if (!data.mechanics) data.mechanics = bgg.mechanics || [];
     }
 
     if (!rawResearchText.trim()) {
       return res.status(400).json({
         error: "Missing research",
-        hint:
-          "Passa extras.rawResearchText (dalla risposta di /research) oppure passa extras.idOrUrl (link BGG) e lo ricavo io.",
+        hint: "Manda { idOrUrl } oppure incolla l’output di /research direttamente qui (rawResearchText).",
+        debug: {
+          gotKeys: Object.keys(body || {}),
+          gotIdOrUrl: !!idOrUrl,
+          rawLen: String(extras?.rawResearchText || "").length,
+        },
       });
     }
 
-    const shopLink = extras.shopLink || body.shopLink || "https://www.frogames.it/";
+    const shopLink = extras.shopLink || "https://www.frogames.it/";
     const publisher = extras.publisherInfo || (data.publishers && data.publishers[0]) || "";
 
-    const designers =
-      extras.designers?.length > 0
-        ? extras.designers.map((d: any) => d.name).join(", ")
-        : data.designers
-          ? (Array.isArray(data.designers) ? data.designers.join(", ") : String(data.designers))
-          : "";
-
-    const artists =
-      extras.artists?.length > 0
-        ? extras.artists.map((a: any) => a.name).join(", ")
-        : data.artists
-          ? (Array.isArray(data.artists) ? data.artists.join(", ") : String(data.artists))
-          : "";
+    const designers = Array.isArray(data.designers) ? data.designers.join(", ") : (data.designers || "");
+    const artists = Array.isArray(data.artists) ? data.artists.join(", ") : (data.artists || "");
 
     const basePrompt = `
 ${BLOG_STRATEGY}
@@ -588,7 +618,7 @@ SE STAI SBORDANDO:
     console.error("GEMINI /generate ERROR:", e?.message, e?.stack);
     return res.status(500).json({
       error: e?.message ?? "Server error",
-      hint: "Controlla GEMINI_API_KEY e GG_XML_API_TOKEN su Vercel (Production) + Redeploy.",
+      hint: "Controlla GEMINI_API_KEY e (GG_XML_API_TOKEN o BGG_XML_API_TOKEN) su Vercel (Production) + Redeploy.",
     });
   }
 }
